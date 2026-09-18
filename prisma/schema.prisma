@@ -3,11 +3,15 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
-// Foundation Domain Models for Hansan OS
+// ─────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────
+
 enum OrderStatus {
   PENDING
   PROCESSING
@@ -16,66 +20,73 @@ enum OrderStatus {
   CANCELLED
 }
 
-enum OrderType {
-  DINE_IN
-  TAKEAWAY
-  DELIVERY
-}
-
-enum PaymentStatus {
-  UNPAID
-  PAID
-  REFUNDED
-}
-
 enum PaymentMethod {
   CASH
   QRIS
-  DEBIT
-  CREDIT
+  CARD
 }
 
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODELS
+// ─────────────────────────────────────────────────────────────────
+
 model Category {
-  id          String     @id @default(cuid())
-  name        String
-  slug        String     @unique
-  displayOrder Int       @default(0)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  menuItems   MenuItem[]
+  id           String     @id @default(cuid())
+  name         String
+  slug         String     @unique
+  displayOrder Int        @default(0)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  menuItems    MenuItem[]
 }
 
 model MenuItem {
   id          String      @id @default(cuid())
   name        String
-  description String?
-  price       Decimal     @db.Decimal(10, 2)
+  description String?     @db.Text
+  price       Int         // Stored in IDR (integer, no decimals)
   imageUrl    String?
   isAvailable Boolean     @default(true)
-  stockCount  Int?        @default(100)
+  stockCount  Int         @default(100)
+  badge       String?     // "Signature" | "Best Seller" | "New" | "Promo" | null
   categoryId  String
-  category    Category    @relation(fields: [categoryId], references: [id])
+  category    Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   orderItems  OrderItem[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
+
+  @@index([categoryId])
 }
 
 model Order {
   id            String        @id @default(cuid())
-  orderNumber   String        @unique
+  orderNumber   String        @unique  // e.g. HN-20260919-1234
   orderType     OrderType     @default(DINE_IN)
   tableNumber   String?
   customerName  String?
+  cashierName   String?
+  subtotal      Int           // IDR integer
+  taxPb1        Int           // 10% PB1 restaurant tax, IDR integer
+  totalAmount   Int           // subtotal + taxPb1
   status        OrderStatus   @default(PENDING)
-  paymentStatus PaymentStatus @default(UNPAID)
-  paymentMethod PaymentMethod?
-  subtotal      Decimal       @db.Decimal(10, 2)
-  taxPb1        Decimal       @db.Decimal(10, 2) // 10% PB1 Restaurant Tax
-  totalAmount   Decimal       @db.Decimal(10, 2)
-  notes         String?
+  paymentMethod PaymentMethod @default(CASH)
+  amountPaid    Int           @default(0)
+  changeAmount  Int           @default(0)
+  bankName      String?       // for CARD payments
+  approvalCode  String?       // EDC trace/approval number
+  notes         String?       @db.Text
   items         OrderItem[]
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
 }
 
 model OrderItem {
@@ -83,10 +94,12 @@ model OrderItem {
   orderId    String
   order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   menuItemId String
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
   quantity   Int      @default(1)
-  unitPrice  Decimal  @db.Decimal(10, 2)
-  subtotal   Decimal  @db.Decimal(10, 2)
+  unitPrice  Int      // snapshot of price at time of order (IDR)
+  subtotal   Int      // quantity * unitPrice
   notes      String?
   createdAt  DateTime @default(now())
+
+  @@index([orderId])
 }
