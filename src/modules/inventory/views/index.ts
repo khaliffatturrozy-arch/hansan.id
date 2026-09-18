@@ -1,0 +1,2 @@
+// Inventory module views
+export {};

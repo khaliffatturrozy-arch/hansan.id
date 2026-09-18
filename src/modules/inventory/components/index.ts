@@ -1,0 +1,2 @@
+// Inventory module components
+export {};
