@@ -263,10 +263,10 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
           }`}
         >
           <div className="flex items-center gap-2">
-            <span>Proceed to Payment</span>
+            <span className="tracking-wide">BAYAR SEKARANG</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="bg-white/20 px-2 py-0.5 rounded-lg text-xs font-semibold">
+            <span className="bg-white/20 px-2.5 py-1 rounded-lg text-xs font-black">
               {formatRupiah(grandTotal)}
             </span>
             <ArrowRight className="w-4 h-4 stroke-[2.5]" />

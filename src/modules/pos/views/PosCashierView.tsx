@@ -7,11 +7,15 @@ import {
   MenuItem,
   CartItem,
   OrderType,
+  PaymentMethod,
+  CompletedTransaction,
 } from "../types/pos";
 import { SearchBar } from "../components/SearchBar";
 import { CategoryTabs } from "../components/CategoryTabs";
 import { MenuCard } from "../components/MenuCard";
 import { CartSidebar } from "../components/CartSidebar";
+import { PaymentModal } from "../components/PaymentModal";
+import { ReceiptModal } from "../components/ReceiptModal";
 import {
   Store,
   Wifi,
@@ -23,14 +27,16 @@ import {
 } from "lucide-react";
 
 export const PosCashierView: React.FC = () => {
-  // State
+  // Navigation & Filtering
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
+
+  // Order Details
   const [orderType, setOrderType] = useState<OrderType>("DINE_IN");
-  const [tableNumber, setTableNumber] = useState<string>("Table 05");
+  const [tableNumber, setTableNumber] = useState<string>("Meja 05");
   const [customerName, setCustomerName] = useState<string>("Dimas Pratama");
 
-  // Initial cart sample to make the UI immediately active and visually engaging
+  // Cart State (pre-populated with 2 items for lively demo)
   const [cart, setCart] = useState<CartItem[]>([
     {
       item: MOCK_MENU_ITEMS[0], // Hansan Aren Latte
@@ -42,9 +48,23 @@ export const PosCashierView: React.FC = () => {
     },
   ]);
 
+  // Modals & Transaction State
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
+  const [isReceiptModalOpen, setIsReceiptModalOpen] = useState<boolean>(false);
+  const [completedTransaction, setCompletedTransaction] =
+    useState<CompletedTransaction | null>(null);
+
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
 
-  // Category counts
+  // Financial calculations
+  const subtotal = useMemo(
+    () => cart.reduce((sum, ci) => sum + ci.item.price * ci.quantity, 0),
+    [cart]
+  );
+  const taxPb1 = useMemo(() => Math.round(subtotal * 0.1), [subtotal]);
+  const grandTotal = subtotal + taxPb1;
+
+  // Category item counts
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {
       all: MOCK_MENU_ITEMS.length,
@@ -106,11 +126,63 @@ export const PosCashierView: React.FC = () => {
     setCart([]);
   };
 
-  const handleCheckout = () => {
-    setCheckoutNotice("Order sent to KDS & Payment Terminal!");
+  // Open Payment Flow
+  const handleOpenPayment = () => {
+    if (cart.length === 0) return;
+    setIsPaymentModalOpen(true);
+  };
+
+  // Confirm Payment & Complete Transaction
+  const handleConfirmPayment = (data: {
+    method: PaymentMethod;
+    amountPaid: number;
+    changeAmount: number;
+    bankName?: string;
+    approvalCode?: string;
+  }) => {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, "");
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const orderNumber = `HN-${dateStr}-${randomSuffix}`;
+
+    const tx: CompletedTransaction = {
+      id: "tx-" + Date.now(),
+      orderNumber,
+      timestamp: today,
+      cashierName: "Rozy (Shift 1)",
+      customerName: customerName || "Tamu",
+      tableNumber: orderType === "DINE_IN" ? tableNumber : "Takeaway",
+      orderType,
+      items: [...cart],
+      subtotal,
+      taxPb1,
+      grandTotal,
+      paymentMethod: data.method,
+      amountPaid: data.amountPaid,
+      changeAmount: data.changeAmount,
+      bankName: data.bankName,
+      approvalCode: data.approvalCode,
+    };
+
+    setCompletedTransaction(tx);
+    setIsPaymentModalOpen(false);
+    setIsReceiptModalOpen(true);
+
+    // Reset Cart for next transaction
+    setCart([]);
+
+    setCheckoutNotice(`Transaksi ${orderNumber} berhasil dicatat!`);
     setTimeout(() => {
       setCheckoutNotice(null);
-    }, 3500);
+    }, 4500);
+  };
+
+  // Start New Transaction from Receipt modal
+  const handleNewTransaction = () => {
+    setIsReceiptModalOpen(false);
+    setCompletedTransaction(null);
+    setCustomerName("");
+    setTableNumber("Meja 01");
   };
 
   const cartQuantityMap = useMemo(() => {
@@ -167,7 +239,7 @@ export const PosCashierView: React.FC = () => {
 
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-100/80 border border-gray-200/60 text-xs font-medium text-gray-700">
             <div className="w-2 h-2 rounded-full bg-brand-500" />
-            <span>Cashier:</span>
+            <span>Kasir:</span>
             <span className="font-bold text-gray-900">Rozy (Shift 1)</span>
           </div>
         </div>
@@ -184,16 +256,16 @@ export const PosCashierView: React.FC = () => {
                 <SearchBar
                   value={searchQuery}
                   onChange={setSearchQuery}
-                  placeholder="Quick search menu items..."
+                  placeholder="Cari menu kopi, makanan, snack..."
                 />
               </div>
 
               <div className="text-xs text-gray-500 font-medium">
-                Showing{" "}
+                Menampilkan{" "}
                 <span className="font-bold text-gray-900">
                   {filteredMenuItems.length}
                 </span>{" "}
-                items
+                menu
               </div>
             </div>
 
@@ -210,10 +282,10 @@ export const PosCashierView: React.FC = () => {
             {filteredMenuItems.length === 0 ? (
               <div className="h-64 flex flex-col items-center justify-center text-center text-gray-400">
                 <p className="text-sm font-semibold text-gray-600">
-                  No menu items found
+                  Menu tidak ditemukan
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Try changing your search keywords or category filters
+                  Coba gunakan kata kunci lain atau pilih kategori Semua Menu
                 </p>
               </div>
             ) : (
@@ -245,10 +317,28 @@ export const PosCashierView: React.FC = () => {
             onDecrement={handleDecrement}
             onRemove={handleRemove}
             onClear={handleClear}
-            onCheckout={handleCheckout}
+            onCheckout={handleOpenPayment}
           />
         </section>
       </div>
+
+      {/* Payment Modal */}
+      <PaymentModal
+        isOpen={isPaymentModalOpen}
+        grandTotal={grandTotal}
+        customerName={customerName}
+        tableNumber={tableNumber}
+        onClose={() => setIsPaymentModalOpen(false)}
+        onConfirmPayment={handleConfirmPayment}
+      />
+
+      {/* Thermal Receipt Modal */}
+      <ReceiptModal
+        isOpen={isReceiptModalOpen}
+        transaction={completedTransaction}
+        onClose={() => setIsReceiptModalOpen(false)}
+        onNewTransaction={handleNewTransaction}
+      />
     </div>
   );
 };

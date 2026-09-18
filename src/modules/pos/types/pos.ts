@@ -1,5 +1,7 @@
 export type OrderType = "DINE_IN" | "TAKEAWAY";
 
+export type PaymentMethod = "CASH" | "QRIS" | "CARD";
+
 export interface Category {
   id: string;
   name: string;
@@ -23,6 +25,25 @@ export interface CartItem {
   item: MenuItem;
   quantity: number;
   notes?: string;
+}
+
+export interface CompletedTransaction {
+  id: string;
+  orderNumber: string;
+  timestamp: Date;
+  cashierName: string;
+  customerName: string;
+  tableNumber: string;
+  orderType: OrderType;
+  items: CartItem[];
+  subtotal: number;
+  taxPb1: number;
+  grandTotal: number;
+  paymentMethod: PaymentMethod;
+  amountPaid: number;
+  changeAmount: number;
+  bankName?: string;
+  approvalCode?: string;
 }
 
 export const CATEGORIES: Category[] = [
