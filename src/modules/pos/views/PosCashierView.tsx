@@ -3,30 +3,38 @@
 import React, { useState, useMemo } from "react";
 import {
   CATEGORIES,
-  MOCK_MENU_ITEMS,
   MenuItem,
-  CartItem,
   OrderType,
   PaymentMethod,
   CompletedTransaction,
 } from "../types/pos";
+import { DUMMY_PRODUCTS, Product } from "@/data/products";
+import { useCart } from "@/context/CartContext";
 import { SearchBar } from "../components/SearchBar";
 import { CategoryTabs } from "../components/CategoryTabs";
 import { MenuCard } from "../components/MenuCard";
 import { CartSidebar } from "../components/CartSidebar";
 import { PaymentModal } from "../components/PaymentModal";
 import { ReceiptModal } from "../components/ReceiptModal";
-import {
-  Store,
-  Wifi,
-  Clock,
-  CheckCircle2,
-  RefreshCw,
-  Bell,
-  Sparkles,
-} from "lucide-react";
+import { Store, Clock, CheckCircle2 } from "lucide-react";
+
+const convertProductToMenuItem = (product: { id: string; name: string; description: string; price: number; category: string; image?: string; imageUrl?: string; stockCount?: number; isAvailable?: boolean; badge?: MenuItem["badge"] }) => ({
+  id: product.id,
+  name: product.name,
+  description: product.description,
+  price: product.price,
+  category: product.category,
+  imageUrl: product.imageUrl ?? product.image ?? "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=600&q=80",
+  stockCount: product.stockCount ?? 20,
+  isAvailable: product.isAvailable ?? true,
+  badge: product.badge,
+});
 
 export const PosCashierView: React.FC = () => {
+  const { cart, addToCart, updateQuantity, removeFromCart, clearCart } = useCart();
+
+  const catalogItems = useMemo<MenuItem[]>(() => DUMMY_PRODUCTS.map((product) => convertProductToMenuItem(product)), []);
+
   // Navigation & Filtering
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -36,29 +44,15 @@ export const PosCashierView: React.FC = () => {
   const [tableNumber, setTableNumber] = useState<string>("Meja 05");
   const [customerName, setCustomerName] = useState<string>("Dimas Pratama");
 
-  // Cart State (pre-populated with 2 items for lively demo)
-  const [cart, setCart] = useState<CartItem[]>([
-    {
-      item: MOCK_MENU_ITEMS[0], // Hansan Aren Latte
-      quantity: 2,
-    },
-    {
-      item: MOCK_MENU_ITEMS[7], // Truffle Fries
-      quantity: 1,
-    },
-  ]);
-
   // Modals & Transaction State
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState<boolean>(false);
-  const [completedTransaction, setCompletedTransaction] =
-    useState<CompletedTransaction | null>(null);
-
+  const [completedTransaction, setCompletedTransaction] = useState<CompletedTransaction | null>(null);
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
 
   // Financial calculations
   const subtotal = useMemo(
-    () => cart.reduce((sum, ci) => sum + ci.item.price * ci.quantity, 0),
+    () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
     [cart]
   );
   const taxPb1 = useMemo(() => Math.round(subtotal * 0.1), [subtotal]);
@@ -67,17 +61,17 @@ export const PosCashierView: React.FC = () => {
   // Category item counts
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {
-      all: MOCK_MENU_ITEMS.length,
+      all: catalogItems.length,
     };
-    MOCK_MENU_ITEMS.forEach((item) => {
+    catalogItems.forEach((item) => {
       counts[item.category] = (counts[item.category] || 0) + 1;
     });
     return counts;
-  }, []);
+  }, [catalogItems]);
 
   // Filtered menu items
   const filteredMenuItems = useMemo(() => {
-    return MOCK_MENU_ITEMS.filter((item) => {
+    return catalogItems.filter((item) => {
       const matchCategory =
         activeCategory === "all" || item.category === activeCategory;
       const matchSearch =
@@ -85,45 +79,39 @@ export const PosCashierView: React.FC = () => {
         item.description.toLowerCase().includes(searchQuery.toLowerCase());
       return matchCategory && matchSearch;
     });
-  }, [activeCategory, searchQuery]);
+  }, [activeCategory, catalogItems, searchQuery]);
 
-  // Cart operations
   const handleAddToCart = (item: MenuItem) => {
-    setCart((prev) => {
-      const existing = prev.find((ci) => ci.item.id === item.id);
-      if (existing) {
-        return prev.map((ci) =>
-          ci.item.id === item.id ? { ...ci, quantity: ci.quantity + 1 } : ci
-        );
-      }
-      return [...prev, { item, quantity: 1 }];
-    });
+    const product: Product = {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      price: item.price,
+      category: item.category as Product["category"],
+      image: item.imageUrl,
+      imageUrl: item.imageUrl,
+      stockCount: item.stockCount,
+      isAvailable: item.isAvailable,
+      badge: item.badge,
+    };
+
+    addToCart(product);
   };
 
   const handleIncrement = (itemId: string) => {
-    setCart((prev) =>
-      prev.map((ci) =>
-        ci.item.id === itemId ? { ...ci, quantity: ci.quantity + 1 } : ci
-      )
-    );
+    updateQuantity(itemId, 1);
   };
 
   const handleDecrement = (itemId: string) => {
-    setCart((prev) =>
-      prev
-        .map((ci) =>
-          ci.item.id === itemId ? { ...ci, quantity: ci.quantity - 1 } : ci
-        )
-        .filter((ci) => ci.quantity > 0)
-    );
+    updateQuantity(itemId, -1);
   };
 
   const handleRemove = (itemId: string) => {
-    setCart((prev) => prev.filter((ci) => ci.item.id !== itemId));
+    removeFromCart(itemId);
   };
 
   const handleClear = () => {
-    setCart([]);
+    clearCart();
   };
 
   // Open Payment Flow
@@ -153,7 +141,10 @@ export const PosCashierView: React.FC = () => {
       customerName: customerName || "Tamu",
       tableNumber: orderType === "DINE_IN" ? tableNumber : "Takeaway",
       orderType,
-      items: [...cart],
+      items: cart.map((item) => ({
+        item: convertProductToMenuItem(item),
+        quantity: item.quantity,
+      })),
       subtotal,
       taxPb1,
       grandTotal,
@@ -168,8 +159,7 @@ export const PosCashierView: React.FC = () => {
     setIsPaymentModalOpen(false);
     setIsReceiptModalOpen(true);
 
-    // Reset Cart for next transaction
-    setCart([]);
+    clearCart();
 
     setCheckoutNotice(`Transaksi ${orderNumber} berhasil dicatat!`);
     setTimeout(() => {
@@ -187,11 +177,20 @@ export const PosCashierView: React.FC = () => {
 
   const cartQuantityMap = useMemo(() => {
     const map: Record<string, number> = {};
-    cart.forEach((ci) => {
-      map[ci.item.id] = ci.quantity;
+    cart.forEach((item) => {
+      map[item.id] = item.quantity;
     });
     return map;
   }, [cart]);
+
+  const cartItems = useMemo(
+    () =>
+      cart.map((item) => ({
+        item: convertProductToMenuItem(item),
+        quantity: item.quantity,
+      })),
+    [cart]
+  );
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-50 font-sans select-none">
@@ -306,7 +305,7 @@ export const PosCashierView: React.FC = () => {
         {/* Right 30% Column: Order Cart Sidebar */}
         <section className="w-[30%] h-full flex flex-col overflow-hidden">
           <CartSidebar
-            items={cart}
+            items={cartItems}
             orderType={orderType}
             tableNumber={tableNumber}
             customerName={customerName}

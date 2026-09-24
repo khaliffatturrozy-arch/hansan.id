@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { CartProvider } from "@/context/CartContext";
 
 export const metadata: Metadata = {
   title: "Hansan OS - F&B POS & Restaurant Operating System",
@@ -20,8 +21,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id">
-      <body className="antialiased min-h-screen overflow-hidden bg-gray-50">
-        {children}
+      <body className="antialiased min-h-screen overflow-hidden bg-surface-ground font-sans">
+        <CartProvider>
+          {children}
+        </CartProvider>
       </body>
     </html>
   );

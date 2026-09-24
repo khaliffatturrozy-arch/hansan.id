@@ -10,13 +10,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        primary: "#FF7A00",
+        secondary: "#0029FF",
+        ivory: "#FFF5D5",
         brand: {
           50: "#fff7ed",
           100: "#ffedd5",
           200: "#fed7aa",
           300: "#fdba74",
           400: "#fb923c",
-          500: "#f97316", // Hansan Amber / Orange Primary
+          500: "#FF7A00", // Hansan Orange Primary
           600: "#ea580c",
           700: "#c2410c",
           800: "#9a3412",
@@ -24,7 +27,7 @@ const config: Config = {
           dark: "#1e1b18",
         },
         surface: {
-          ground: "#f8fafc",
+          ground: "#FFF5D5", // Background Ivory
           card: "#ffffff",
           muted: "#f1f5f9",
           border: "#e2e8f0",
@@ -32,6 +35,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: [
+          "var(--font-glacial)",
           "Inter",
           "-apple-system",
           "BlinkMacSystemFont",
@@ -39,6 +43,7 @@ const config: Config = {
           "Roboto",
           "sans-serif",
         ],
+        glacial: ["var(--font-glacial)", "sans-serif"],
       },
       boxShadow: {
         pos: "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05)",
