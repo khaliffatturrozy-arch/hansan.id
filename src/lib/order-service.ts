@@ -235,18 +235,10 @@ export async function createOrder(input: CreateOrderInput) {
         })),
       });
 
-      await Promise.all(
-        orderEntries.map(async (entry) => {
-          const menuItem = menuMap.get(entry.id)!;
-          await tx.menuItem.update({
-            where: { id: entry.id },
-            data: {
-              stockCount: menuItem.stockCount - entry.quantity,
-            },
-          });
-        })
-      );
-
+      // Inventory deduction is intentionally deferred. The current repo has no
+      // complete stock ledger, recipe/BOM, or outlet-scoped inventory model.
+      // Order creation must remain transaction-safe and atomic without making a
+      // permanent, premature inventory mutation decision.
       return createdOrder;
     });
 

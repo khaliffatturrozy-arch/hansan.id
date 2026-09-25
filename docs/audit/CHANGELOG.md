@@ -2,24 +2,30 @@
 
 ### Added
 
-- Order API idempotency support and safer persistence handling.
-- Prisma migration scaffold for order idempotency and model integrity checks.
-- Audit tracking for transaction-hardening status.
+- Idempotent order creation path and server-side validation for the POS transaction flow.
+- Prisma migration scaffold for order persistence hardening.
+- Audit updates documenting database and authorization blockers.
 
 ### Changed
 
-- POS checkout now submits an idempotency key and prevents duplicate in-flight submissions.
-- Order creation now resolves menu prices server-side and snapshots them into `OrderItem.unitPrice`.
-- Prisma order write path now runs as a single transaction with stock reduction and item creation.
+- Order creation now resolves authoritative menu prices from the database and stores them as `OrderItem.unitPrice` snapshots.
+- Transaction writes are kept atomic without assigning direct inventory mutation to the order service.
+- API responses now emit correct failure status codes for validation and persistence errors.
 
 ### Fixed
 
-- False-success order responses by returning proper HTTP statuses for validation and persistence failures.
-- Client-total trust issue by computing authoritative totals from the database.
+- Duplicate request risk through idempotency key handling.
+- Client-calculated total trust issue by deriving totals from the database.
 
 ### Validation
 
 - `npx prisma validate`: PASS
 - `npm run lint`: PASS
 - `npm run build`: PASS
-- `npx prisma migrate status`: BLOCKED due missing reachable PostgreSQL credentials
+- `npx prisma migrate status`: BLOCKED because the environment does not have a reachable PostgreSQL connection or valid DATABASE_URL
+
+### Blockers
+
+- No real auth/session infrastructure currently exists in the repo.
+- No outlet/tenant domain model exists yet.
+- Live database verification remains blocked until credentials are available and the target database is reachable.

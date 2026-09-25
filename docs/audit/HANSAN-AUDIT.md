@@ -7,15 +7,45 @@
 READY_WITH_CONDITIONS
 
 ## Current Phase
-P0.2 Transaction Persistence Hardening
+P0.2B Database + Authorization Gate
 
-## Implementation
+## Database
 
-- Hardened the order backend to resolve menu prices from the authoritative database instead of trusting client totals.
-- Added idempotency key handling to prevent duplicate order creation for the same logical payment attempt.
-- Wrapped order creation, order items, and stock deduction in a Prisma transaction so the order cannot be partially written.
-- Added a migration scaffold for the order idempotency field and index support.
-- Improved API error handling so database and validation failures return the right HTTP status instead of a false success.
+- Prisma schema: PASS
+- Migration files: PASS (local schema file and migration scaffold are consistent; live migration execution remains blocked)
+- DATABASE_URL: MISSING
+- Live DB connection: BLOCKED
+- Migration verification: BLOCKED because the environment does not currently expose a reachable PostgreSQL connection
+
+## Authentication
+
+- Existing auth infrastructure: NO
+- Server session validation: FAIL / BLOCKED
+- Order API authorization: FAIL / BLOCKED
+- Middleware: NO
+- Supabase Auth integration: NO
+
+## Outlet Isolation
+
+- Domain model exists: NO
+- Authorization enforced: FAIL / BLOCKED
+- Server-side outlet resolution from authenticated user/session: not available
+
+## Inventory Coupling
+
+- Stock mutation currently occurs: YES, in the earlier implementation path, but it has been isolated from the final transaction flow to avoid coupling order persistence to an unfinished inventory architecture.
+- Recipe resolution exists: NO
+- Inventory ledger exists: NO
+- Production-safe: NO
+- Correct future flow: ORDER CONFIRMED → INVENTORY EVENT → RECIPE RESOLUTION → STOCK LEDGER
+
+## Implementation Summary
+
+- Hardening completed for order validation and duplicate protection.
+- Server-side authoritative menu price resolution is in place.
+- OrderItem stores the price snapshot at transaction time.
+- Order + OrderItem creation is atomic in a Prisma transaction.
+- Direct stock deduction was intentionally isolated to keep the order transaction reliable while inventory architecture is incomplete.
 
 ## Validation
 
@@ -23,27 +53,10 @@ P0.2 Transaction Persistence Hardening
 - `npx prisma validate`: PASS
 - `npm run lint`: PASS
 - `npm run build`: PASS
-- `npx prisma migrate status`: BLOCKED (no usable `DATABASE_URL` in the current environment; Prisma cannot reach the configured host)
+- `npx prisma migrate status`: BLOCKED (database not reachable / no valid credentials in current environment)
 
-## Security and Database Status
+## Overall
 
-- Authentication / RBAC: BLOCKED. The repository has no session or outlet authorization layer to reuse.
-- Database verification: BLOCKED. The local environment does not currently contain a valid or reachable PostgreSQL connection.
-- Migration path: schema is valid locally; live migration execution remains blocked until the target PostgreSQL credentials are available.
+READY_WITH_CONDITIONS
 
-## Transaction Integrity
-
-- Atomic create-order flow: implemented
-- Price snapshot: implemented via `OrderItem.unitPrice`
-- Duplicate submission protection: implemented via `idempotencyKey` and in-flight submit lock
-- Invalid menu item / invalid quantity handling: implemented
-- No partial order persistence on validation failure: implemented
-
-## Remaining Risks
-
-- Live order writes remain unverified until the target PostgreSQL database is reachable.
-- Real cashier auth and outlet isolation must be connected to the existing Supabase/session model when that infrastructure is provided.
-- KDS and inventory propagation remain explicitly out of scope for this cycle.
-
-## Next Priority
-Resolve the remaining live database and auth gating before moving to P0.3 KDS propagation.
+This is not production-ready for live database writes until the project provides a real Postgres connection, an authenticated session model, and an outlet/tenant authorization model.
