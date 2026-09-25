@@ -1,17 +1,20 @@
 import { NextResponse } from "next/server";
+import { AuthGuardError, requireProtectedRequest } from "@/lib/auth";
 import { createOrder, listRecentOrders, OrderPersistenceError } from "@/lib/order-service";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const orders = await listRecentOrders(20);
+    const authContext = await requireProtectedRequest(request, ["orders.read"]);
+    const orders = await listRecentOrders(20, authContext.organizationId, authContext.outletId);
     return NextResponse.json({ ok: true, orders });
   } catch (error) {
+    const status = error instanceof AuthGuardError ? error.statusCode : 500;
     return NextResponse.json(
       {
         ok: false,
         error: error instanceof Error ? error.message : "Gagal mengambil data order.",
       },
-      { status: 500 }
+      { status }
     );
   }
 }
@@ -30,7 +33,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const authContext = await requireProtectedRequest(request, ["orders.create"], {
+      suppliedOrganizationId: body.organizationId,
+      suppliedOutletId: body.outletId,
+      suppliedRole: body.role,
+      suppliedPermissions: body.permissions,
+    });
+
     const order = await createOrder({
+      organizationId: authContext.organizationId,
+      outletId: authContext.outletId,
+      staffId: authContext.staffId,
       orderType: body.orderType,
       tableNumber: body.tableNumber,
       customerName: body.customerName,
@@ -47,7 +60,11 @@ export async function POST(request: Request) {
     const statusCode = order.duplicate ? 200 : 201;
     return NextResponse.json({ ok: true, order }, { status: statusCode });
   } catch (error) {
-    const status = error instanceof OrderPersistenceError ? error.statusCode : 500;
+    const status = error instanceof AuthGuardError
+      ? error.statusCode
+      : error instanceof OrderPersistenceError
+        ? error.statusCode
+        : 500;
     return NextResponse.json(
       {
         ok: false,

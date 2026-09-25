@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 
 export type CreateOrderInput = {
+  organizationId: string;
+  outletId: string;
+  staffId: string;
   orderType: "DINE_IN" | "TAKEAWAY";
   tableNumber?: string | null;
   customerName?: string | null;
@@ -57,9 +60,13 @@ function buildIdempotencyKey(input: CreateOrderInput) {
 export async function createOrder(input: CreateOrderInput) {
   if (!process.env.DATABASE_URL) {
     throw new OrderPersistenceError(
-      "DATABASE_URL belum diatur. Tambahkan konfigurasi database sebelum menyimpan order.",
+      "BLOCKED_EXTERNAL_DEPENDENCY: DATABASE_URL belum diatur. Tambahkan konfigurasi database sebelum menyimpan order.",
       500
     );
+  }
+
+  if (!input.organizationId || !input.outletId || !input.staffId) {
+    throw new OrderPersistenceError("Context organisasi, outlet, dan staff wajib valid.", 403);
   }
 
   if (!input.items || input.items.length === 0) {
@@ -170,8 +177,15 @@ export async function createOrder(input: CreateOrderInput) {
       totalAmount: true,
       status: true,
       createdAt: true,
+      organizationId: true,
+      outletId: true,
+      staffId: true,
     },
   });
+
+  if (existingOrder && (existingOrder.organizationId !== input.organizationId || existingOrder.outletId !== input.outletId)) {
+    throw new OrderPersistenceError("Context outlet atau organisasi tidak sesuai dengan order yang sudah dibuat.", 409);
+  }
 
   if (existingOrder) {
     return {
@@ -206,6 +220,9 @@ export async function createOrder(input: CreateOrderInput) {
     const order = await prisma.$transaction(async (tx) => {
       const createdOrder = await tx.order.create({
         data: {
+          organizationId: input.organizationId,
+          outletId: input.outletId,
+          staffId: input.staffId,
           orderNumber,
           idempotencyKey,
           orderType: input.orderType,
@@ -263,12 +280,16 @@ export async function createOrder(input: CreateOrderInput) {
   }
 }
 
-export async function listRecentOrders(limit = 20) {
+export async function listRecentOrders(limit = 20, organizationId?: string, outletId?: string) {
   if (!process.env.DATABASE_URL) {
     return [];
   }
 
   return prisma.order.findMany({
+    where: {
+      ...(organizationId ? { organizationId } : {}),
+      ...(outletId ? { outletId } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: limit,
     include: {

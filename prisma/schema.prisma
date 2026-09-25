@@ -35,6 +35,117 @@ enum OrderType {
 // MODELS
 // ─────────────────────────────────────────────────────────────────
 
+model Organization {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  outlets   Outlet[]
+  staff     Staff[]
+  roles     Role[]
+  orders    Order[]   @relation("OrganizationOrders")
+
+  @@index([slug])
+}
+
+model Outlet {
+  id             String    @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  slug           String
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  staff          Staff[]
+  orders         Order[]   @relation("OutletOrders")
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+}
+
+model Staff {
+  id             String      @id @default(cuid())
+  authUserId     String      @unique
+  email          String      @unique
+  firstName      String
+  lastName       String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  outletId       String?
+  outlet         Outlet?     @relation(fields: [outletId], references: [id], onDelete: SetNull)
+  status         String      @default("ACTIVE")
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  roles          StaffRole[]
+  orders         Order[]
+  auditEvents    AuditLog[]  @relation("ActorStaff")
+
+  @@index([organizationId])
+  @@index([outletId])
+}
+
+model Permission {
+  id          String          @id @default(cuid())
+  name        String          @unique
+  description String?
+  createdAt   DateTime        @default(now())
+  roles       RolePermission[]
+}
+
+model Role {
+  id          String          @id @default(cuid())
+  organizationId String
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name        String
+  code        String          @unique
+  description String?
+  createdAt   DateTime        @default(now())
+  permissions RolePermission[]
+  staffRoles  StaffRole[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model StaffRole {
+  staffId String
+  roleId  String
+  staff   Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  role    Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([staffId, roleId])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  actorStaffId  String?
+  actorStaff    Staff?    @relation("ActorStaff", fields: [actorStaffId], references: [id], onDelete: SetNull)
+  actorUserId   String?
+  organizationId String?
+  outletId      String?
+  entityType    String
+  entityId      String?
+  action        String
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([outletId])
+  @@index([entityType, entityId])
+}
+
 model Category {
   id           String     @id @default(cuid())
   name         String
@@ -66,6 +177,12 @@ model MenuItem {
 
 model Order {
   id              String        @id @default(cuid())
+  organizationId  String?
+  organization    Organization? @relation("OrganizationOrders", fields: [organizationId], references: [id], onDelete: Restrict)
+  outletId        String?
+  outlet          Outlet?       @relation("OutletOrders", fields: [outletId], references: [id], onDelete: Restrict)
+  staffId         String?
+  staff           Staff?        @relation(fields: [staffId], references: [id], onDelete: SetNull)
   orderNumber     String        @unique  // e.g. HN-20260919-1234
   idempotencyKey  String?       @unique
   orderType       OrderType     @default(DINE_IN)
@@ -89,6 +206,9 @@ model Order {
   @@index([status])
   @@index([createdAt])
   @@index([idempotencyKey])
+  @@index([organizationId])
+  @@index([outletId])
+  @@index([staffId])
 }
 
 model OrderItem {
