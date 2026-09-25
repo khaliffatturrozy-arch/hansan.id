@@ -65,28 +65,30 @@ model MenuItem {
 }
 
 model Order {
-  id            String        @id @default(cuid())
-  orderNumber   String        @unique  // e.g. HN-20260919-1234
-  orderType     OrderType     @default(DINE_IN)
-  tableNumber   String?
-  customerName  String?
-  cashierName   String?
-  subtotal      Int           // IDR integer
-  taxPb1        Int           // 10% PB1 restaurant tax, IDR integer
-  totalAmount   Int           // subtotal + taxPb1
-  status        OrderStatus   @default(PENDING)
-  paymentMethod PaymentMethod @default(CASH)
-  amountPaid    Int           @default(0)
-  changeAmount  Int           @default(0)
-  bankName      String?       // for CARD payments
-  approvalCode  String?       // EDC trace/approval number
-  notes         String?       @db.Text
-  items         OrderItem[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  orderNumber     String        @unique  // e.g. HN-20260919-1234
+  idempotencyKey  String?       @unique
+  orderType       OrderType     @default(DINE_IN)
+  tableNumber     String?
+  customerName    String?
+  cashierName     String?
+  subtotal        Int           // IDR integer
+  taxPb1          Int           // 10% PB1 restaurant tax, IDR integer
+  totalAmount     Int           // subtotal + taxPb1
+  status          OrderStatus   @default(PENDING)
+  paymentMethod   PaymentMethod @default(CASH)
+  amountPaid      Int           @default(0)
+  changeAmount    Int           @default(0)
+  bankName        String?       // for CARD payments
+  approvalCode    String?       // EDC trace/approval number
+  notes           String?       @db.Text
+  items           OrderItem[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([status])
   @@index([createdAt])
+  @@index([idempotencyKey])
 }
 
 model OrderItem {

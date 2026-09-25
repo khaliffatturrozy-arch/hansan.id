@@ -49,6 +49,7 @@ export const PosCashierView: React.FC = () => {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState<boolean>(false);
   const [completedTransaction, setCompletedTransaction] = useState<CompletedTransaction | null>(null);
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Financial calculations
   const subtotal = useMemo(
@@ -121,50 +122,91 @@ export const PosCashierView: React.FC = () => {
   };
 
   // Confirm Payment & Complete Transaction
-  const handleConfirmPayment = (data: {
+  const handleConfirmPayment = async (data: {
     method: PaymentMethod;
     amountPaid: number;
     changeAmount: number;
     bankName?: string;
     approvalCode?: string;
   }) => {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, "");
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-    const orderNumber = `HN-${dateStr}-${randomSuffix}`;
+    if (isSubmitting) {
+      return;
+    }
 
-    const tx: CompletedTransaction = {
-      id: "tx-" + Date.now(),
-      orderNumber,
-      timestamp: today,
-      cashierName: "Rozy (Shift 1)",
-      customerName: customerName || "Tamu",
-      tableNumber: orderType === "DINE_IN" ? tableNumber : "Takeaway",
-      orderType,
-      items: cart.map((item) => ({
-        item: convertProductToMenuItem(item),
-        quantity: item.quantity,
-      })),
-      subtotal,
-      taxPb1,
-      grandTotal,
-      paymentMethod: data.method,
-      amountPaid: data.amountPaid,
-      changeAmount: data.changeAmount,
-      bankName: data.bankName,
-      approvalCode: data.approvalCode,
-    };
+    setIsSubmitting(true);
 
-    setCompletedTransaction(tx);
-    setIsPaymentModalOpen(false);
-    setIsReceiptModalOpen(true);
+    try {
+      const idempotencyKey = crypto.randomUUID();
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          idempotencyKey,
+          orderType,
+          tableNumber: orderType === "DINE_IN" ? tableNumber : "Takeaway",
+          customerName: customerName || "Tamu",
+          cashierName: "Rozy (Shift 1)",
+          paymentMethod: data.method,
+          amountPaid: data.amountPaid,
+          changeAmount: data.changeAmount,
+          bankName: data.bankName,
+          approvalCode: data.approvalCode,
+          items: cart.map((item) => ({
+            id: item.id,
+            quantity: item.quantity,
+          })),
+        }),
+      });
 
-    clearCart();
+      const payload = await response.json();
 
-    setCheckoutNotice(`Transaksi ${orderNumber} berhasil dicatat!`);
-    setTimeout(() => {
-      setCheckoutNotice(null);
-    }, 4500);
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error || "Gagal menyimpan transaksi order.");
+      }
+
+      const today = new Date();
+      const tx: CompletedTransaction = {
+        id: payload.order?.id || `tx-${Date.now()}`,
+        orderNumber: payload.order?.orderNumber || `HN-${today.toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(1000 + Math.random() * 9000)}`,
+        timestamp: today,
+        cashierName: "Rozy (Shift 1)",
+        customerName: customerName || "Tamu",
+        tableNumber: orderType === "DINE_IN" ? tableNumber : "Takeaway",
+        orderType,
+        items: cart.map((item) => ({
+          item: convertProductToMenuItem(item),
+          quantity: item.quantity,
+        })),
+        subtotal,
+        taxPb1,
+        grandTotal,
+        paymentMethod: data.method,
+        amountPaid: data.amountPaid,
+        changeAmount: data.changeAmount,
+        bankName: data.bankName,
+        approvalCode: data.approvalCode,
+      };
+
+      setCompletedTransaction(tx);
+      setIsPaymentModalOpen(false);
+      setIsReceiptModalOpen(true);
+      clearCart();
+
+      setCheckoutNotice(`Transaksi ${tx.orderNumber} berhasil dicatat!`);
+      setTimeout(() => {
+        setCheckoutNotice(null);
+      }, 4500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Transaksi gagal diproses.";
+      setCheckoutNotice(message);
+      setTimeout(() => {
+        setCheckoutNotice(null);
+      }, 5000);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Start New Transaction from Receipt modal
