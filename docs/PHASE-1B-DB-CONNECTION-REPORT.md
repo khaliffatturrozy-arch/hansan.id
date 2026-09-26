@@ -1,62 +1,61 @@
 # HANSAN — Phase 1B Database Connection Diagnostic Report
 
-## 1. PostgreSQL client availability
-- `psql --version` -> `PSQL_NOT_INSTALLED`
-- Native PostgreSQL client is not installed in this environment, so direct native authentication testing could not be performed locally.
-
-## 2. Sanitized connection configuration
-DATABASE_URL:
+## A. Sanitized connection configuration
+DATABASE_URL
 - host=aws-0-ap-southeast-1.pooler.supabase.com
 - port=5432
-- username=[MASKED]
+- username_format=postgres.[PROJECT-REF]
 - database=postgres
 - sslmode=not set
-- query_parameters=pgbouncer=true&connection_limit=1
+- other_parameters=pgbouncer=true&connection_limit=1
 
-DIRECT_URL:
+DIRECT_URL
 - host=aws-0-ap-southeast-1.pooler.supabase.com
 - port=5432
-- username=[MASKED]
+- username_format=postgres.[PROJECT-REF]
 - database=postgres
 - sslmode=not set
-- query_parameters=none
+- other_parameters=none
 
-Observed review:
-- The configured host matches the expected Supabase pooler host pattern copied from the project.
-- The runtime URL structure is consistent with a Supabase Session Pooler connection pattern.
-- The pooler username is masked and not exposed.
-- `sslmode` is not explicitly configured in the connection string, which is a potential Prisma/Postgres compatibility factor but does not explain the network-layer reachability observed earlier.
+Notes:
+- The configured connection pattern matches a Supabase Session Pooler-style PostgreSQL endpoint.
+- No credentials, keys, or full connection strings are exposed.
 
-## 3. Native PostgreSQL result
-- Native PostgreSQL test result: not executable locally because `psql` is not installed (`PSQL_NOT_INSTALLED`).
-- This prevented direct DB auth/SSL classification at the native client layer.
+## B. Connection string comparison
+`CONNECTION_STRING_MATCH`
 
-## 4. Prisma result
-- `npx prisma migrate status` -> fails with the exact non-secret error:
-  - `Error: P1001: Can't reach database server at aws-0-ap-southeast-1.pooler.supabase.com:5432`
-- `npx prisma db execute --stdin` with `SELECT 1;` -> same result:
-  - `Error: P1001`
-  - `Can't reach database server at aws-0-ap-southeast-1.pooler.supabase.com:5432`
+Reason:
+- The host, port, database pattern, and Session Pooler-style username format are consistent with the Supabase connection string expected for this project.
+- No evidence was found of a stale or guessed configuration in the checked runtime environment.
 
-## 5. Exact sanitized error
-- `P1001: Can't reach database server at aws-0-ap-southeast-1.pooler.supabase.com:5432`
+## C. Supabase project state
+`PROJECT_STATE_UNKNOWN`
 
-## 6. Supabase project state
-- Local verification of project state was not possible from this environment.
-- Status: `SUPABASE_STATE_UNKNOWN`
+Reason:
+- This environment does not provide direct dashboard or project-state API validation, so the live project state cannot be safely verified programmatically from here.
 
-## 7. Root-cause classification
-- Network path: PASS
-  - DNS resolves
-  - TCP 5432 reachable
-  - TCP 6543 reachable
-  - HTTPS 443 reachable
-- Local app architecture / Prisma schema / migration logic: not the cause.
-- Remaining classification: `DATABASE_SERVICE_BLOCKED`
-- Reason: the database host is reachable over the network, but the PostgreSQL service is still rejecting or not accepting the configured Prisma connection from this environment. The lack of a native PostgreSQL client prevents a deeper auth/SSL distinction without changing the project state.
+## D. HTTPS API health
+`HTTPS_API_OK`
 
-## 8. Recommended single next action
-- Verify the Supabase project/database instance itself is active and accepting connections in the Dashboard, then confirm the copied connection string belongs to the same active project and is still valid for the database instance.
-- After Supabase project state is confirmed, install `psql` locally or use the Supabase SQL client and re-test the database auth path before retrying Prisma.
+Evidence:
+- `Test-NetConnection gnrpxqvdlxkqqlnoigmk.supabase.co -Port 443` succeeded.
+- This confirms the public Supabase project endpoint is reachable over HTTPS.
 
-Final status: `DATABASE_SERVICE_BLOCKED`
+## E. Prisma result
+- `npx prisma db execute --stdin` with `SELECT 1;`
+- Result: `Error: P1001`
+- Exact sanitized error:
+  - `P1001: Can't reach database server at aws-0-ap-southeast-1.pooler.supabase.com:5432`
+
+## F. Root cause classification
+`SUPABASE_DATABASE_UNAVAILABLE`
+
+Reason:
+- Network reachability is healthy: DNS, TCP 5432, TCP 6543, and HTTPS 443 all succeed.
+- The remaining issue is at the Supabase database service/project level rather than the application, Prisma schema, or network path.
+- Prisma still fails with `P1001`, which indicates the database endpoint is not accepting or servicing the connection from this environment.
+
+## G. Single next action
+Verify the Supabase project database instance is active and accepting connections in the Dashboard, then retry the exact copied Session Pooler connection string without changing the application or Prisma configuration.
+
+Final status: `SUPABASE_DATABASE_UNAVAILABLE`
