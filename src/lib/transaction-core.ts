@@ -118,6 +118,32 @@ export type OrderSubmissionResult = {
   order?: OrderRecord;
 };
 
+export type OrderCompletionResult = {
+  duplicate: boolean;
+  order: OrderRecord;
+  audit: AuditEvent[];
+  inventory: Array<Record<string, unknown>>;
+};
+
+export type OrderLifecycleOptions = {
+  authContext?: { organizationId?: string; outletId?: string } | null;
+  suppliedOrganizationId?: unknown;
+  suppliedOutletId?: unknown;
+  auditLogger?: { record: (type: string, payload: Record<string, unknown>) => AuditEvent } | null;
+  createdBy?: string;
+  inventoryProcessor?: {
+    processCompletedOrder: (args: {
+      order: OrderRecord;
+      organizationId: string;
+      outletId: string;
+      createdBy: string;
+      recipeVersion?: string;
+    }) => { status: "OK" | "INSUFFICIENT_STOCK" | "ALREADY_PROCESSED"; movements: Array<Record<string, unknown>>; audit: Array<{ type: string; payload: Record<string, unknown>; createdAt: Date }> };
+  } | null;
+  paymentStatus?: PaymentStatus;
+  recipeVersion?: string;
+};
+
 export type ContextValidationInput = {
   authContext?: { organizationId?: string; outletId?: string } | null;
   suppliedOrganizationId?: unknown;
@@ -331,6 +357,7 @@ export class MockPaymentProvider {
 
 export class OrderDomainService {
   private readonly submissionRegistry = new Map<string, OrderRecord>();
+  private readonly completionRegistry = new Map<string, OrderRecord>();
 
   createDraftOrder(input: OrderDraftInput): OrderRecord {
     const normalizedItems = input.items.map((item) => {
@@ -461,6 +488,132 @@ export class OrderDomainService {
       ...order,
       status: nextStatus,
       updatedAt: new Date(),
+    };
+  }
+
+  confirmOrder(order: OrderRecord, options: OrderLifecycleOptions = {}): { order: OrderRecord; audit: AuditEvent[] } {
+    const auditLogger = options.auditLogger ?? new AuditLogger();
+    const updated = this.transitionOrder(order, "CONFIRMED");
+    const audit = [
+      auditLogger.record("ORDER_CONFIRMED", {
+        orderId: order.id,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        staffId: order.staffId,
+      }),
+    ];
+
+    return { order: updated, audit };
+  }
+
+  startProcessing(order: OrderRecord, options: OrderLifecycleOptions = {}): { order: OrderRecord; audit: AuditEvent[] } {
+    const auditLogger = options.auditLogger ?? new AuditLogger();
+    const updated = this.transitionOrder(order, "PROCESSING");
+    const audit = [
+      auditLogger.record("ORDER_PROCESSING", {
+        orderId: order.id,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        staffId: order.staffId,
+      }),
+    ];
+
+    return { order: updated, audit };
+  }
+
+  markReady(order: OrderRecord, options: OrderLifecycleOptions = {}): { order: OrderRecord; audit: AuditEvent[] } {
+    const auditLogger = options.auditLogger ?? new AuditLogger();
+    const updated = this.transitionOrder(order, "READY");
+    const audit = [
+      auditLogger.record("ORDER_READY", {
+        orderId: order.id,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        staffId: order.staffId,
+      }),
+    ];
+
+    return { order: updated, audit };
+  }
+
+  cancelOrder(order: OrderRecord, options: OrderLifecycleOptions = {}): { order: OrderRecord; audit: AuditEvent[] } {
+    const auditLogger = options.auditLogger ?? new AuditLogger();
+    const updated = this.transitionOrder(order, "CANCELLED");
+    const audit = [
+      auditLogger.record("ORDER_CANCELLED", {
+        orderId: order.id,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        staffId: order.staffId,
+      }),
+    ];
+
+    return { order: updated, audit };
+  }
+
+  completeOrder(order: OrderRecord, options: OrderLifecycleOptions = {}): OrderCompletionResult {
+    const authContext = options.authContext ?? { organizationId: order.organizationId, outletId: order.outletId };
+    assertServerAuthoritativeContext({
+      authContext,
+      suppliedOrganizationId: options.suppliedOrganizationId,
+      suppliedOutletId: options.suppliedOutletId,
+    });
+
+    const previous = this.completionRegistry.get(order.id);
+    if (order.status === "COMPLETED" || previous) {
+      const canonical = previous ?? order;
+      return {
+        duplicate: true,
+        order: canonical,
+        audit: [],
+        inventory: [],
+      };
+    }
+
+    if (order.status !== "READY") {
+      throw new InvalidOrderTransitionError(`Order cannot be completed from status ${order.status}.`);
+    }
+
+    const auditLogger = options.auditLogger ?? new AuditLogger();
+    const completed = this.transitionOrder(order, "COMPLETED");
+    const audit: AuditEvent[] = [
+      auditLogger.record("ORDER_COMPLETED", {
+        orderId: order.id,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        staffId: order.staffId,
+        paymentStatus: options.paymentStatus ?? "UNKNOWN",
+      }),
+    ];
+
+    const inventoryProcessor = options.inventoryProcessor;
+    let inventory: Array<Record<string, unknown>> = [];
+
+    if (inventoryProcessor) {
+      const processorResult = inventoryProcessor.processCompletedOrder({
+        order: completed,
+        organizationId: order.organizationId,
+        outletId: order.outletId,
+        createdBy: options.createdBy ?? order.staffId,
+        recipeVersion: options.recipeVersion,
+      });
+
+      if (processorResult.status === "INSUFFICIENT_STOCK") {
+        throw new Error(`Inventory consumption rejected for order ${order.id}.`);
+      }
+
+      inventory = processorResult.movements ?? [];
+      for (const event of processorResult.audit ?? []) {
+        audit.push(auditLogger.record(event.type, event.payload ?? {}));
+      }
+    }
+
+    this.completionRegistry.set(order.id, completed);
+    return {
+      duplicate: false,
+      order: completed,
+      audit,
+      inventory,
     };
   }
 
