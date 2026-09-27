@@ -59,7 +59,7 @@
 - Organization/outlet/staff seed data for a real authenticated tenant flow
 
 ## commit hash
-- 9cb6a83
+- 1d00734
 
 ## recommended next task
 - Provision a live Postgres and Supabase project, then apply the security migration and validate the user/session/outlet permission chain end-to-end before enabling broader POS and inventory workflows.
