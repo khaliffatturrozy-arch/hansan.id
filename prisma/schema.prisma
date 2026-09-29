@@ -102,12 +102,14 @@ model Role {
   name        String
   code        String          @unique
   description String?
+  isPlatform  Boolean         @default(false)
   createdAt   DateTime        @default(now())
   permissions RolePermission[]
   staffRoles  StaffRole[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
+  @@index([isPlatform])
 }
 
 model RolePermission {

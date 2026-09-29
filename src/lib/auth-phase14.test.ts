@@ -1,9 +1,9 @@
 /**
  * Phase 14 auth tests:
  * - Service-role key must fail closed (no anon fallback)
- * - Multi-role deterministic resolution
+ * - Multi-role deterministic resolution (name-based and isPlatform-flag-based)
  * - Tenant isolation
- * - Platform/tenant separation
+ * - Platform/tenant separation (name-based and structural isPlatform flag)
  * - Permission escalation prevention
  * - Owner bootstrap eligibility
  * - Auth failure modes
@@ -26,6 +26,7 @@ const {
   requirePermission,
   requireRole,
   isPlatformRole,
+  isPlatformRoleRecord,
   requirePlatformRole,
   requirePlatformPermission,
   PLATFORM_ROLE_NAMES,
@@ -44,9 +45,34 @@ describe("multi-role deterministic resolution", () => {
     assert.equal(result, "OWNER");
   });
 
-  it("resolves platform roles above OWNER", () => {
+  it("resolves platform roles above OWNER (name-based)", () => {
     const result = resolveCanonicalRoleName(["OWNER", "PLATFORM_ADMIN"]);
     assert.equal(result, "PLATFORM_ADMIN");
+  });
+
+  it("resolves platform roles above OWNER (isPlatform-flag-based)", () => {
+    const result = resolveCanonicalRoleName(
+      ["OWNER", "PLATFORM_ADMIN"],
+      [
+        { name: "OWNER", isPlatform: false },
+        { name: "PLATFORM_ADMIN", isPlatform: true },
+      ]
+    );
+    assert.equal(result, "PLATFORM_ADMIN");
+  });
+
+  it("uses isPlatform flag as structural source of truth over name alone", () => {
+    // A role named PLATFORM_ADMIN but with isPlatform=false is NOT treated as platform
+    // A role with isPlatform=true always wins regardless of name
+    const result = resolveCanonicalRoleName(
+      ["OWNER", "PLATFORM_ADMIN"],
+      [
+        { name: "OWNER", isPlatform: false },
+        { name: "PLATFORM_ADMIN", isPlatform: false }, // flag says NOT platform
+      ]
+    );
+    // Without isPlatform=true, falls back to tenant logic — OWNER wins
+    assert.equal(result, "OWNER");
   });
 
   it("always resolves the same canonical role regardless of array order", () => {
@@ -57,7 +83,7 @@ describe("multi-role deterministic resolution", () => {
     assert.equal(b, c);
   });
 
-  it("returns STAFF as the default when roles array is empty", () => {
+  it("returns STAFF as the default when roles array is empty or null", () => {
     assert.equal(resolveCanonicalRoleName([]), "STAFF");
     assert.equal(resolveCanonicalRoleName(null), "STAFF");
     assert.equal(resolveCanonicalRoleName(undefined), "STAFF");
@@ -68,10 +94,24 @@ describe("multi-role deterministic resolution", () => {
     assert.equal(result, "OWNER");
   });
 
-  it("resolves PLATFORM_ADMIN > PLATFORM_DEVELOPER > PLATFORM_SUPPORT", () => {
+  it("resolves PLATFORM_ADMIN > PLATFORM_DEVELOPER > PLATFORM_SUPPORT (name-based)", () => {
     assert.equal(resolveCanonicalRoleName(["PLATFORM_SUPPORT", "PLATFORM_DEVELOPER", "PLATFORM_ADMIN"]), "PLATFORM_ADMIN");
     assert.equal(resolveCanonicalRoleName(["PLATFORM_SUPPORT", "PLATFORM_DEVELOPER"]), "PLATFORM_DEVELOPER");
     assert.equal(resolveCanonicalRoleName(["PLATFORM_SUPPORT"]), "PLATFORM_SUPPORT");
+  });
+
+  it("resolves PLATFORM_ADMIN > PLATFORM_DEVELOPER > PLATFORM_SUPPORT (isPlatform-flag-based)", () => {
+    assert.equal(
+      resolveCanonicalRoleName(
+        ["PLATFORM_SUPPORT", "PLATFORM_DEVELOPER", "PLATFORM_ADMIN"],
+        [
+          { name: "PLATFORM_SUPPORT", isPlatform: true },
+          { name: "PLATFORM_DEVELOPER", isPlatform: true },
+          { name: "PLATFORM_ADMIN", isPlatform: true },
+        ]
+      ),
+      "PLATFORM_ADMIN"
+    );
   });
 });
 
@@ -157,16 +197,26 @@ describe("tenant isolation", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("platform/tenant separation", () => {
-  it("identifies platform roles correctly", () => {
+  it("identifies platform roles correctly by name", () => {
     for (const role of PLATFORM_ROLE_NAMES) {
       assert.equal(isPlatformRole(role), true);
     }
   });
 
-  it("rejects tenant roles as platform roles", () => {
+  it("rejects tenant roles as platform roles (name-based)", () => {
     for (const role of TENANT_ROLE_NAMES) {
       assert.equal(isPlatformRole(role), false);
     }
+  });
+
+  it("isPlatformRoleRecord uses isPlatform flag as structural source of truth", () => {
+    // isPlatform=true → always platform regardless of name
+    assert.equal(isPlatformRoleRecord({ name: "OWNER", isPlatform: true }), true);
+    // isPlatform=false but platform name → falls back to name check
+    assert.equal(isPlatformRoleRecord({ name: "PLATFORM_ADMIN", isPlatform: false }), true);
+    // isPlatform=false and tenant name → not platform
+    assert.equal(isPlatformRoleRecord({ name: "OWNER", isPlatform: false }), false);
+    assert.equal(isPlatformRoleRecord({ name: "CASHIER", isPlatform: false }), false);
   });
 
   it("requirePlatformRole rejects a tenant role for platform access", () => {

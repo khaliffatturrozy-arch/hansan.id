@@ -228,24 +228,49 @@ export function isBootstrapReplay(record: { bootstrapStatus?: string | null } | 
  *
  * Priority order:
  * 1. Platform roles (PLATFORM_ADMIN > PLATFORM_DEVELOPER > PLATFORM_SUPPORT)
+ *    — identified by isPlatform=true flag when DB records are provided,
+ *    or by name matching PLATFORM_ROLE_NAMES when only names are available.
  * 2. OWNER
- * 3. Other tenant roles, alphabetically stable
+ * 3. Other tenant roles, priority-sorted then alphabetically for stability
  * 4. Default "STAFF" when no roles exist
  *
  * This ensures the resolved primary roleName is always the same for a given
  * set of role assignments, regardless of database ordering.
  */
-export function resolveCanonicalRoleName(roleNames: string[]): string {
+export function resolveCanonicalRoleName(
+  roleNames: string[] | null | undefined,
+  roleRecords?: Array<{ name: string; isPlatform: boolean }> | null
+): string {
   if (!roleNames || roleNames.length === 0) {
     return "STAFF";
   }
 
   const normalized = roleNames.map((name) => (normalizeString(name)?.toUpperCase() ?? "STAFF"));
 
-  // Platform roles take highest precedence
-  for (const platformRole of PLATFORM_ROLE_NAMES) {
-    if (normalized.includes(platformRole)) {
-      return platformRole;
+  // When database records are provided, use the isPlatform flag for structural separation.
+  // Otherwise, fall back to name-based heuristic.
+  if (roleRecords && roleRecords.length > 0) {
+    const platformRecord = roleRecords.find((r) => r.isPlatform);
+    if (platformRecord) {
+      const platformName = normalizeString(platformRecord.name)?.toUpperCase();
+      // Return the highest-priority platform role
+      for (const p of PLATFORM_ROLE_NAMES) {
+        if (
+          roleRecords.some(
+            (r) => r.isPlatform && normalizeString(r.name)?.toUpperCase() === p
+          )
+        ) {
+          return p;
+        }
+      }
+      return platformName ?? "PLATFORM_ADMIN";
+    }
+  } else {
+    // Name-based platform detection (used when no DB records are provided)
+    for (const platformRole of PLATFORM_ROLE_NAMES) {
+      if (normalized.includes(platformRole)) {
+        return platformRole;
+      }
     }
   }
 
@@ -354,7 +379,11 @@ export async function resolveAuthenticatedStaffContext(
   // Deterministic multi-role resolution: platform roles take precedence, then
   // owner, then other tenant roles sorted by code (alphabetical) for stability.
   // This ensures the resolved roleName is always the same for a given set of roles.
-  const resolvedRoleName = resolveCanonicalRoleName(staff.roles.map((r) => r.role.name));
+  // isPlatform flag from the database is used when available for structural separation.
+  const resolvedRoleName = resolveCanonicalRoleName(
+    staff.roles.map((r) => r.role.name),
+    staff.roles.map((r) => ({ name: r.role.name, isPlatform: r.role.isPlatform }))
+  );
 
   const normalizedRequiredPermissions = requiredPermissions.map((permission) => permission.toLowerCase());
   const hasRequiredPermission = normalizedRequiredPermissions.every((permission) =>
@@ -413,6 +442,17 @@ export type PlatformAccessContext = {
 export function isPlatformRole(roleName: string | null | undefined): boolean {
   const normalizedRole = normalizeString(roleName)?.toUpperCase();
   return Boolean(normalizedRole && PLATFORM_ROLE_NAMES.includes(normalizedRole as (typeof PLATFORM_ROLE_NAMES)[number]));
+}
+
+/**
+ * isPlatformRoleRecord — DB-backed platform role check.
+ * Prefers the structural isPlatform flag from the database over name-based detection.
+ * Use this when a Role record from Prisma is available.
+ */
+export function isPlatformRoleRecord(role: { name: string; isPlatform: boolean }): boolean {
+  if (role.isPlatform) return true;
+  // Also check name as a secondary guard
+  return isPlatformRole(role.name);
 }
 
 export function requirePlatformRole(
