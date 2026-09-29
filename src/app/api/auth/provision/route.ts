@@ -41,6 +41,7 @@
 
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { AuthGuardError, getBearerToken } from "@/lib/auth";
 
@@ -85,6 +86,40 @@ function normalizeRequiredString(value: unknown, field: string): string {
 
 export async function POST(request: Request) {
   try {
+    // ── Step 0: Server-only provision secret gate ──
+    // HANSAN_PROVISION_SECRET must be set in the server environment.
+    // The caller must supply it as the X-Provision-Secret header.
+    // This prevents any arbitrary authenticated Supabase user from
+    // self-provisioning as OWNER. Only a caller who knows the secret
+    // (i.e. an operator performing a controlled first-time setup) can proceed.
+    // The secret is never logged, stored, or returned in any response.
+    const provisionSecret = process.env.HANSAN_PROVISION_SECRET;
+    if (!provisionSecret) {
+      throw new AuthGuardError(
+        "BLOCKED_EXTERNAL_DEPENDENCY: HANSAN_PROVISION_SECRET is not configured.",
+        500
+      );
+    }
+    const suppliedSecret = request.headers.get("x-provision-secret");
+    // Use a constant-time comparison to avoid timing side-channels.
+    // We do this manually since timingSafeEqual requires equal-length Buffers —
+    // we normalize lengths before comparing.
+    const secretMatch = (() => {
+      if (!suppliedSecret) return false;
+      const a = Buffer.from(provisionSecret, "utf8");
+      const b = Buffer.from(suppliedSecret, "utf8");
+      if (a.length !== b.length) {
+        // Still do a dummy compare to avoid early-exit timing leak.
+        const dummy = Buffer.alloc(a.length);
+        timingSafeEqual(a, dummy);
+        return false;
+      }
+      return timingSafeEqual(a, b);
+    })();
+    if (!secretMatch) {
+      throw new AuthGuardError("Provision secret is missing or incorrect.", 403);
+    }
+
     // ── Step 1: Validate bearer token using service-role key (fail closed) ──
     const token = getBearerToken(request);
     if (!token) {
