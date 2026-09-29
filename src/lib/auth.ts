@@ -223,6 +223,58 @@ export function isBootstrapReplay(record: { bootstrapStatus?: string | null } | 
   return Boolean(record && normalizeString(record.bootstrapStatus)?.toUpperCase() === "REPLAYED");
 }
 
+/**
+ * Deterministic multi-role resolution.
+ *
+ * Priority order:
+ * 1. Platform roles (PLATFORM_ADMIN > PLATFORM_DEVELOPER > PLATFORM_SUPPORT)
+ * 2. OWNER
+ * 3. Other tenant roles, alphabetically stable
+ * 4. Default "STAFF" when no roles exist
+ *
+ * This ensures the resolved primary roleName is always the same for a given
+ * set of role assignments, regardless of database ordering.
+ */
+export function resolveCanonicalRoleName(roleNames: string[]): string {
+  if (!roleNames || roleNames.length === 0) {
+    return "STAFF";
+  }
+
+  const normalized = roleNames.map((name) => (normalizeString(name)?.toUpperCase() ?? "STAFF"));
+
+  // Platform roles take highest precedence
+  for (const platformRole of PLATFORM_ROLE_NAMES) {
+    if (normalized.includes(platformRole)) {
+      return platformRole;
+    }
+  }
+
+  // OWNER is the highest-priority tenant role
+  if (normalized.includes("OWNER")) {
+    return "OWNER";
+  }
+
+  // Sort remaining tenant roles for stability; pick the first
+  const tenantPriority: Record<string, number> = {
+    BACK_OFFICE: 1,
+    MANAGER: 2,
+    FINANCE: 3,
+    CASHIER: 4,
+    KITCHEN: 5,
+    BAR: 6,
+    STAFF: 7,
+  };
+
+  const sorted = [...normalized].sort((a, b) => {
+    const pa = tenantPriority[a] ?? 99;
+    const pb = tenantPriority[b] ?? 99;
+    if (pa !== pb) return pa - pb;
+    return a.localeCompare(b);
+  });
+
+  return sorted[0] ?? "STAFF";
+}
+
 export async function resolveAuthenticatedStaffContext(
   request: Request | NextRequest,
   requiredPermissions: string[] = []
@@ -233,12 +285,13 @@ export async function resolveAuthenticatedStaffContext(
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceRoleKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+  // SECURITY: Must fail closed. Never fall back to anon key for privileged server operations.
+  // The anon key does not have the authority to validate JWT tokens server-side.
   if (!supabaseUrl || !supabaseServiceRoleKey) {
     throw new AuthGuardError(
-      "BLOCKED_EXTERNAL_DEPENDENCY: Supabase environment is not configured.",
+      "BLOCKED_EXTERNAL_DEPENDENCY: Server-side auth requires SUPABASE_SERVICE_ROLE_KEY. Anon key fallback is not permitted.",
       500
     );
   }
@@ -298,7 +351,11 @@ export async function resolveAuthenticatedStaffContext(
     }
   }
 
-  const roleName = staff.roles[0]?.role.name ?? "STAFF";
+  // Deterministic multi-role resolution: platform roles take precedence, then
+  // owner, then other tenant roles sorted by code (alphabetical) for stability.
+  // This ensures the resolved roleName is always the same for a given set of roles.
+  const resolvedRoleName = resolveCanonicalRoleName(staff.roles.map((r) => r.role.name));
+
   const normalizedRequiredPermissions = requiredPermissions.map((permission) => permission.toLowerCase());
   const hasRequiredPermission = normalizedRequiredPermissions.every((permission) =>
     [...permissions].some((candidate) => candidate.toLowerCase() === permission)
@@ -314,7 +371,7 @@ export async function resolveAuthenticatedStaffContext(
     staffId: staff.id,
     organizationId: staff.organizationId,
     outletId: staff.outletId ?? "",
-    roleName,
+    roleName: resolvedRoleName,
     permissions: [...permissions],
     status: staffStatus as StaffStatus,
   };
@@ -344,4 +401,117 @@ export async function requireProtectedRequest(
   identityOverride: ClientIdentityOverride = {}
 ) {
   return requireAuth(request, requiredPermissions, identityOverride);
+}
+
+export type PlatformAccessContext = {
+  userId: string;
+  email: string;
+  roleName: string;
+  permissions: string[];
+};
+
+export function isPlatformRole(roleName: string | null | undefined): boolean {
+  const normalizedRole = normalizeString(roleName)?.toUpperCase();
+  return Boolean(normalizedRole && PLATFORM_ROLE_NAMES.includes(normalizedRole as (typeof PLATFORM_ROLE_NAMES)[number]));
+}
+
+export function requirePlatformRole(
+  context: { roleName?: unknown } | null | undefined,
+  expectedRole: string
+) {
+  const roleName = normalizeString(context?.roleName)?.toUpperCase();
+  const normalizedRole = normalizeString(expectedRole)?.toUpperCase();
+
+  if (!roleName || !normalizedRole || !isPlatformRole(roleName) || roleName !== normalizedRole) {
+    throw new AuthGuardError(`Platform access denied. Required role: ${expectedRole}.`, 403);
+  }
+
+  return roleName;
+}
+
+export function requirePlatformPermission(
+  context: { permissions?: unknown[] | string | null } | null | undefined,
+  permission: string
+) {
+  const normalizedPermission = normalizeString(permission)?.toLowerCase();
+  const permissions = normalizePermissionList(context?.permissions ?? []).map((value) => value.toLowerCase());
+
+  if (!normalizedPermission || !permissions.includes(normalizedPermission)) {
+    throw new AuthGuardError(`Platform permission denied. Missing: ${permission}.`, 403);
+  }
+
+  return true;
+}
+
+export async function requirePlatformAccess(
+  request: Request | NextRequest,
+  requiredPermissions: string[] = []
+): Promise<PlatformAccessContext> {
+  const authContext = await resolveAuthenticatedStaffContext(request, requiredPermissions);
+
+  if (!isPlatformRole(authContext.roleName)) {
+    throw new AuthGuardError("Platform access requires an explicit platform role.", 403);
+  }
+
+  const hasRequiredPermission = requiredPermissions.every((permission) =>
+    authContext.permissions.some((candidate) => candidate.toLowerCase() === permission.toLowerCase())
+  );
+
+  if (!hasRequiredPermission) {
+    throw new AuthGuardError("Platform permission denied.", 403);
+  }
+
+  return {
+    userId: authContext.userId,
+    email: authContext.email,
+    roleName: authContext.roleName,
+    permissions: authContext.permissions,
+  };
+}
+
+export function createServerRequestFromHeaders(
+  headers?: Headers | Record<string, string | undefined> | undefined
+): Request {
+  const normalizedHeaders = new Headers();
+
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => normalizedHeaders.set(key, value));
+  } else if (headers) {
+    Object.entries(headers).forEach(([key, value]) => {
+      if (value) {
+        normalizedHeaders.set(key, value);
+      }
+    });
+  }
+
+  return new Request("http://localhost", { headers: normalizedHeaders });
+}
+
+export async function resolveTenantContextFromServerHeaders(
+  headers?: Headers | Record<string, string | undefined> | undefined,
+  requiredPermissions: string[] = []
+): Promise<AuthenticatedStaffContext> {
+  const request = createServerRequestFromHeaders(headers);
+  return resolveAuthenticatedStaffContext(request, requiredPermissions);
+}
+
+export async function resolvePlatformContextFromServerHeaders(
+  headers?: Headers | Record<string, string | undefined> | undefined,
+  requiredPermissions: string[] = []
+): Promise<PlatformAccessContext> {
+  const request = createServerRequestFromHeaders(headers);
+  return requirePlatformAccess(request, requiredPermissions);
+}
+
+export function redactSensitiveConfig(value: string | undefined | null): string {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    return "Unavailable";
+  }
+
+  if (normalized.length <= 4) {
+    return "********";
+  }
+
+  return `${"*".repeat(Math.min(12, normalized.length))}`;
 }

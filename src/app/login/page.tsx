@@ -1,6 +1,6 @@
 'use client';
 
-import { createClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import { FormEvent, useMemo, useState } from 'react';
 
@@ -14,12 +14,13 @@ export default function LoginPage() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'error' | 'success'>('idle');
   const [message, setMessage] = useState('');
 
+  // Use @supabase/ssr browser client — this stores the session in cookies,
+  // which allows Next.js Server Components and middleware to read it server-side.
   const supabaseClient = useMemo(() => {
     if (!supabaseUrl || !supabaseAnonKey) {
       return null;
     }
-
-    return createClient(supabaseUrl, supabaseAnonKey);
+    return createBrowserClient(supabaseUrl, supabaseAnonKey);
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -47,6 +48,10 @@ export default function LoginPage() {
 
     setStatus('success');
     setMessage('Signed in successfully. Redirecting…');
+
+    // Hard navigation to force middleware to re-evaluate the session cookie
+    // and redirect to the correct post-login destination.
+    router.refresh();
     router.push('/owner');
   }
 
