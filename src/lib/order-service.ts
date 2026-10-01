@@ -1,22 +1,33 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { computeOrderTotals } from "@/lib/pricing";
 
+/**
+ * PHASE C INPUT CONTRACT
+ *
+ * Identity, pricing and payment-authorization values are NOT part of this type,
+ * because they must never be supplied by a caller that has not already been
+ * authenticated and authorized:
+ *
+ *   REMOVED (previously accepted and silently ignored) : subtotal, taxPb1, totalAmount
+ *   REMOVED (previously accepted and persisted)        : approvalCode
+ *   REMOVED (always recomputed by this service)        : changeAmount
+ *
+ * `cashierName` is now REQUIRED and must be supplied by the server from the
+ * authenticated Staff record. The previous `?? "System"` default fabricated an
+ * operator identity for the receipt and the audit trail.
+ */
 export type CreateOrderInput = {
   organizationId: string;
   outletId: string;
   staffId: string;
+  cashierName: string;
   orderType: "DINE_IN" | "TAKEAWAY";
   tableNumber?: string | null;
   customerName?: string | null;
-  cashierName?: string | null;
-  subtotal?: number;
-  taxPb1?: number;
-  totalAmount?: number;
   paymentMethod: "CASH" | "QRIS" | "CARD";
   amountPaid?: number;
-  changeAmount?: number;
   bankName?: string | null;
-  approvalCode?: string | null;
   idempotencyKey?: string | null;
   items: Array<{
     id: string;
@@ -91,8 +102,14 @@ export async function createOrder(input: CreateOrderInput) {
     throw new OrderPersistenceError("Data item order tidak valid.", 400);
   }
 
+  // TENANT-SCOPED MENU LOOKUP (Phase B).
+  // The organizationId filter is MANDATORY. Without it, a menu item id belonging
+  // to another tenant could be priced and persisted into this tenant's order.
+  // MenuItem is now tenant-owned at the database level, and this query is the
+  // only place the application reads the catalog.
   const menuItems = await prisma.menuItem.findMany({
     where: {
+      organizationId: input.organizationId,
       id: { in: normalizedItems.map((item) => item.id) },
     },
     select: {
@@ -146,8 +163,13 @@ export async function createOrder(input: CreateOrderInput) {
     serverSubtotal += subtotal;
   }
 
-  const serverTax = Math.round(serverSubtotal * 0.1);
-  const serverTotal = serverSubtotal + serverTax;
+  // Server-authoritative totals. The rate and rounding come from the shared
+  // pricing rules (src/lib/pricing.ts) so the POS display and the persisted
+  // order cannot drift, and `totalAmount === subtotal + taxPb1` is guaranteed
+  // (also enforced by the Order_total_consistency_check database constraint).
+  const totals = computeOrderTotals(serverSubtotal);
+  const serverTax = totals.taxPb1;
+  const serverTotal = totals.totalAmount;
 
   const amountPaid = (() => {
     if (input.paymentMethod !== "CASH") {
@@ -174,8 +196,14 @@ export async function createOrder(input: CreateOrderInput) {
     select: {
       id: true,
       orderNumber: true,
+      subtotal: true,
+      taxPb1: true,
       totalAmount: true,
+      amountPaid: true,
+      changeAmount: true,
+      cashierName: true,
       status: true,
+      paymentMethod: true,
       createdAt: true,
       organizationId: true,
       outletId: true,
@@ -191,9 +219,14 @@ export async function createOrder(input: CreateOrderInput) {
     return {
       id: existingOrder.id,
       orderNumber: existingOrder.orderNumber,
-      status: existingOrder.status,
+      subtotal: existingOrder.subtotal,
+      taxPb1: existingOrder.taxPb1,
       totalAmount: existingOrder.totalAmount,
-      paymentMethod: input.paymentMethod,
+      amountPaid: existingOrder.amountPaid,
+      changeAmount: existingOrder.changeAmount,
+      cashierName: existingOrder.cashierName,
+      status: existingOrder.status,
+      paymentMethod: existingOrder.paymentMethod,
       createdAt: existingOrder.createdAt,
       duplicate: true,
     };
@@ -228,16 +261,31 @@ export async function createOrder(input: CreateOrderInput) {
           orderType: input.orderType,
           tableNumber: input.tableNumber ?? null,
           customerName: input.customerName ?? null,
-          cashierName: input.cashierName ?? "System",
+          // Cashier identity is the authenticated Staff member supplied by the
+          // server route. No default is fabricated.
+          cashierName: input.cashierName,
           subtotal: serverSubtotal,
           taxPb1: serverTax,
           totalAmount: serverTotal,
-          status: "COMPLETED",
+          // PHASE C LIFECYCLE DECISION — the initial state is PENDING.
+          //  - COMPLETED was wrong: no fulfilment has occurred, yet every order
+          //    looked finished the moment it was rung up.
+          //  - PROCESSING was wrong: nothing is being prepared yet, and no KDS
+          //    exists to acknowledge the ticket.
+          //  - PENDING is the schema default: "recorded and accepted, not yet
+          //    started". Payment is recorded by paymentMethod/amountPaid, not by
+          //    status.
+          // The remaining transitions and their authorization rules belong to a
+          // later phase (order lifecycle + inventory).
+          status: "PENDING",
           paymentMethod: input.paymentMethod,
           amountPaid,
           changeAmount,
           bankName: input.bankName ?? null,
-          approvalCode: input.approvalCode ?? null,
+          // Never recorded from a client. There is no payment gateway, and a
+          // client-supplied approval code is not evidence of payment. The column
+          // is retained for future gateway integration only.
+          approvalCode: null,
         },
       });
 
@@ -262,8 +310,13 @@ export async function createOrder(input: CreateOrderInput) {
     return {
       id: order.id,
       orderNumber: order.orderNumber,
-      status: order.status,
+      subtotal: order.subtotal,
+      taxPb1: order.taxPb1,
       totalAmount: order.totalAmount,
+      amountPaid: order.amountPaid,
+      changeAmount: order.changeAmount,
+      cashierName: order.cashierName,
+      status: order.status,
       paymentMethod: order.paymentMethod,
       createdAt: order.createdAt,
       duplicate: false,
