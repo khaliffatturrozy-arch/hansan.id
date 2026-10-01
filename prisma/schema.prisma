@@ -36,16 +36,17 @@ enum OrderType {
 // ─────────────────────────────────────────────────────────────────
 
 model Organization {
-  id        String    @id @default(cuid())
-  name      String
-  slug      String    @unique
-  isActive  Boolean   @default(true)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  outlets   Outlet[]
-  staff     Staff[]
-  roles     Role[]
-  orders    Order[]   @relation("OrganizationOrders")
+  id         String     @id @default(cuid())
+  name       String
+  slug       String     @unique
+  isActive   Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  outlets    Outlet[]
+  staff      Staff[]
+  roles      Role[]
+  categories Category[] @relation("OrganizationCategories")
+  orders     Order[]    @relation("OrganizationOrders")
 
   @@index([slug])
 }
@@ -96,17 +97,26 @@ model Permission {
 }
 
 model Role {
-  id          String          @id @default(cuid())
-  organizationId String
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name        String
-  code        String          @unique
-  description String?
-  isPlatform  Boolean         @default(false)
-  createdAt   DateTime        @default(now())
-  permissions RolePermission[]
-  staffRoles  StaffRole[]
+  id             String        @id @default(cuid())
+  // PLATFORM-ROLE OWNERSHIP MODEL (Phase B decision):
+  //  - Tenant roles  : isPlatform = false → organizationId is REQUIRED.
+  //  - Platform roles: isPlatform = true  → organizationId is NULL.
+  // Platform roles are global definitions not owned by any tenant. The invariant
+  // is enforced by the Role_platform_org_check CHECK constraint created in the
+  // Phase B migration (PostgreSQL, raw SQL — Prisma cannot express CHECK).
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  code           String        @unique
+  description    String?
+  isPlatform     Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  permissions    RolePermission[]
+  staffRoles     StaffRole[]
 
+  // Scoped to tenant roles. Platform roles (organizationId IS NULL) are governed
+  // by the globally unique `code` above, because PostgreSQL treats NULLs as
+  // distinct in unique indexes.
   @@unique([organizationId, name])
   @@index([organizationId])
   @@index([isPlatform])
@@ -148,43 +158,69 @@ model AuditLog {
   @@index([entityType, entityId])
 }
 
+// Categories are ORGANIZATION-owned (tenant-owned). They are deliberately NOT
+// outlet-scoped: a menu taxonomy is shared across all outlets of a tenant.
+// Outlet-specific availability, if ever required, belongs on MenuItem.
 model Category {
-  id           String     @id @default(cuid())
-  name         String
-  slug         String     @unique
-  displayOrder Int        @default(0)
-  isActive     Boolean    @default(true)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  menuItems    MenuItem[]
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation("OrganizationCategories", fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  slug           String
+  displayOrder   Int          @default(0)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  menuItems      MenuItem[]
+
+  // A slug is unique WITHIN a tenant, not globally: two organizations may each
+  // legitimately own a "coffee" category. The previous global uniqueness made
+  // multi-tenancy impossible.
+  @@unique([organizationId, slug])
+  // Composite key required so MenuItem can carry a tenant-scoped foreign key
+  // back to its category. See MenuItem.category.
+  @@unique([id, organizationId])
 }
 
 model MenuItem {
-  id          String      @id @default(cuid())
-  name        String
-  description String?     @db.Text
-  price       Int         // Stored in IDR (integer, no decimals)
-  imageUrl    String?
-  isAvailable Boolean     @default(true)
-  stockCount  Int         @default(100)
-  badge       String?     // "Signature" | "Best Seller" | "New" | "Promo" | null
-  categoryId  String
-  category    Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  orderItems  OrderItem[]
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?     @db.Text
+  price          Int         // Stored in IDR (integer, no decimals)
+  imageUrl       String?
+  isAvailable    Boolean     @default(true)
+  stockCount     Int         @default(100)
+  badge          String?     // "Signature" | "Best Seller" | "New" | "Promo" | null
+  categoryId     String
+  // TENANT-SCOPED COMPOSITE RELATION.
+  // The database enforces that a menu item's organizationId always equals its
+  // category's organizationId. It is therefore impossible to attach a menu item
+  // to another organization's category, and any tenant-scoped menu query that
+  // filters on organizationId cannot cross tenants.
+  category       Category    @relation(fields: [categoryId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  orderItems     OrderItem[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
-  @@index([categoryId])
+  @@index([organizationId])
+  @@index([categoryId, organizationId])
 }
 
 model Order {
   id              String        @id @default(cuid())
-  organizationId  String?
-  organization    Organization? @relation("OrganizationOrders", fields: [organizationId], references: [id], onDelete: Restrict)
-  outletId        String?
-  outlet          Outlet?       @relation("OutletOrders", fields: [outletId], references: [id], onDelete: Restrict)
-  staffId         String?
-  staff           Staff?        @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  // TENANT OWNERSHIP IS MANDATORY.
+  // An order that is not attributable to an organization, an outlet, and a staff
+  // member cannot be audited, reconciled, or tenant-isolated. All three are
+  // derived server-side from the authenticated staff context (never the client).
+  organizationId  String
+  organization    Organization  @relation("OrganizationOrders", fields: [organizationId], references: [id], onDelete: Restrict)
+  outletId        String
+  outlet          Outlet        @relation("OutletOrders", fields: [outletId], references: [id], onDelete: Restrict)
+  staffId         String
+  // Restrict (not SetNull): the staff column is required, and order history must
+  // not lose its cashier. Staff are deactivated via Staff.status, never hard-deleted.
+  staff           Staff         @relation(fields: [staffId], references: [id], onDelete: Restrict)
   orderNumber     String        @unique  // e.g. HN-20260919-1234
   idempotencyKey  String?       @unique
   orderType       OrderType     @default(DINE_IN)
@@ -205,11 +241,19 @@ model Order {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  @@index([status])
-  @@index([createdAt])
-  @@index([idempotencyKey])
-  @@index([organizationId])
+  // Index plan (verified against real query patterns, not speculative):
+  //  - (organizationId, outletId, createdAt) → POS recent-orders list
+  //    (src/lib/order-service.ts#listRecentOrders)
+  //  - (organizationId, status) → Owner HQ counters/aggregates
+  //    (src/app/owner/page.tsx)
+  // The previous single-column organizationId index became a redundant prefix of
+  // the first composite and was removed. The bare idempotencyKey index duplicated
+  // the index already created by @unique and was removed.
+  @@index([organizationId, outletId, createdAt])
+  @@index([organizationId, status])
   @@index([outletId])
+  @@index([createdAt])
+  @@index([status])
   @@index([staffId])
 }
 
@@ -226,4 +270,36 @@ model OrderItem {
   createdAt  DateTime @default(now())
 
   @@index([orderId])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// DEVELOPER / PLATFORM ACCESS (tenant-independent)
+// ─────────────────────────────────────────────────────────────────
+
+// DeveloperAccess is the AUTHORITATIVE Developer/platform authorization boundary.
+// It is intentionally separate from Staff → StaffRole → Role: Staff is
+// tenant-bound (organizationId NOT NULL) while platform authority is
+// tenant-independent. Joining a tenant Staff row to a global platform Role
+// would create a privilege-confusion hazard, so StaffRole must NEVER be used
+// to grant Developer access.
+//
+// - authUserId is the SOLE identity key (Supabase auth.users.id).
+// - email is stored normalized lowercase for operator display only; it is NOT
+//   the identity key (an email change in Auth must not re-key access).
+// - status follows the existing Staff convention (String, not a Prisma enum:
+//   Staff.status is also a free String holding ACTIVE | INACTIVE | SUSPENDED).
+//   Allowed values: ACTIVE | SUSPENDED. Records are deactivated via status,
+//   never hard-deleted (auditable kill switch).
+// - No organizationId / outletId / staffId / roleId / permissions / password.
+//   There are no foreign keys to any tenant table.
+model DeveloperAccess {
+  id          String    @id @default(cuid())
+  authUserId  String    @unique
+  email       String
+  status      String    @default("ACTIVE")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  @@index([status])
 }
