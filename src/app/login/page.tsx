@@ -49,10 +49,57 @@ export default function LoginPage() {
     setStatus('success');
     setMessage('Signed in successfully. Redirecting…');
 
-    // Hard navigation to force middleware to re-evaluate the session cookie
-    // and redirect to the correct post-login destination.
-    router.refresh();
-    router.push('/owner');
+    // Resolve the post-login destination SERVER-SIDE. The path comes only
+    // from POST /api/auth/destination (DeveloperAccess → Staff → NO_ACCESS).
+    // No client role/org/staffId/permissions, no ?role=, no localStorage, and
+    // no arbitrary redirect URL is ever trusted here.
+    try {
+      const destinationResponse = await fetch('/api/auth/destination', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+
+      if (destinationResponse.status === 401) {
+        setStatus('error');
+        setMessage('Session could not be established. Please sign in again.');
+        return;
+      }
+
+      const destinationBody = (await destinationResponse.json().catch(() => null)) as {
+        ok?: boolean;
+        path?: unknown;
+      } | null;
+
+      const serverPath =
+        destinationBody && destinationBody.ok === true && typeof destinationBody.path === 'string'
+          ? destinationBody.path
+          : null;
+
+      // Only allow the four server-known application paths. Anything else is
+      // treated as unauthorized (fail closed, no open redirect).
+      const allowedPaths = new Set(['/developer', '/owner', '/', '/unauthorized']);
+      if (!serverPath || !allowedPaths.has(serverPath)) {
+        await supabaseClient.auth.signOut();
+        router.refresh();
+        setStatus('error');
+        setMessage('This account has no HANSAN access. Contact your administrator.');
+        return;
+      }
+
+      if (serverPath === '/unauthorized') {
+        await supabaseClient.auth.signOut();
+        router.refresh();
+        setStatus('error');
+        setMessage('This account has no HANSAN access. Contact your administrator.');
+        return;
+      }
+
+      router.refresh();
+      router.push(serverPath);
+    } catch {
+      setStatus('error');
+      setMessage('Signed in, but the destination could not be resolved. Please try again.');
+    }
   }
 
   return (

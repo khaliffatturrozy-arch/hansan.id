@@ -14,17 +14,22 @@
  *   that validation is done in the API layer by requireProtectedRequest().
  * - This middleware only gates page access; API route authorization is separate.
  *
- * PROTECTED ROUTE TIERS:
+ * PROTECTED ROUTE TIERS (coarse session-presence only):
+ * /developer/* — requires authenticated session (DeveloperAccess resolved at page level)
  * /owner/*     — requires authenticated session (role resolved at page/API level)
+ * /* (POS root) — requires authenticated session (tenant staff resolved at page/API level)
  * /api/*       — handled by requireProtectedRequest() in each route handler
- * /login       — redirects to /owner if already authenticated
+ * /login       — redirects an authenticated session to /owner as a SAFE DEFAULT;
+ *   the authoritative post-login destination is resolved server-side by
+ *   POST /api/auth/destination (DeveloperAccess → Staff → NO_ACCESS).
  */
 
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
-// Routes that require a valid session
-const PROTECTED_PREFIXES = ["/owner"];
+// Routes that require a valid session (coarse presence check only —
+// Developer vs OWNER vs STAFF is resolved at the page/API level, never here).
+const PROTECTED_PREFIXES = ["/developer", "/owner"];
 
 // Routes that should redirect authenticated users away (e.g. login)
 const AUTH_ENTRY_ROUTES = ["/login"];
@@ -84,7 +89,9 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isProtected = PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const isProtected =
+    pathname === "/" ||
+    PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
   const isAuthEntry = AUTH_ENTRY_ROUTES.some((route) => pathname === route);
 
   // Unauthenticated user accessing a protected route → redirect to login
@@ -94,7 +101,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  // Authenticated user accessing the login page → redirect to owner HQ
+  // Authenticated user accessing the login page → safe default (/owner).
+  // Middleware cannot query the database (Edge runtime), so it must NOT decide
+  // Developer vs OWNER vs STAFF here. The authoritative destination is resolved
+  // server-side by POST /api/auth/destination immediately after sign-in.
   if (isAuthEntry && user) {
     return NextResponse.redirect(new URL("/owner", request.url));
   }
