@@ -1,5 +1,6 @@
 import { createClient, type User } from "@supabase/supabase-js";
 import type { NextRequest } from "next/server";
+import { getPermissionDefinition, PERMISSION } from "./permissions";
 
 export class AuthGuardError extends Error {
   public statusCode: number;
@@ -17,8 +18,16 @@ export type AuthenticatedStaffContext = {
   userId: string;
   email: string;
   staffId: string;
+  // Human-readable name taken from the Staff record. Optional so synthetic
+  // contexts remain constructible; consumers must fall back to `email` (also
+  // authenticated) and never to a fabricated name.
+  staffName?: string;
   organizationId: string;
-  outletId: string;
+  // Nullable on purpose: a staff member may legitimately have no outlet assigned.
+  // Callers performing an outlet-bound action must call requireOutlet(context),
+  // which rejects with 403. The previous `?? ""` fallback silently produced an
+  // empty outlet id instead of failing.
+  outletId: string | null;
   roleName: string;
   permissions: string[];
   status: StaffStatus;
@@ -48,10 +57,45 @@ export const PLATFORM_ROLE_NAMES = [
   "PLATFORM_SUPPORT",
 ] as const;
 
+/**
+ * Permissions an already-provisioned identity must hold before
+ * POST /api/auth/bootstrap may record owner bootstrap completion.
+ * Sourced from the canonical catalog (src/lib/permissions.ts) — never re-declared.
+ */
 export const OWNER_BOOTSTRAP_REQUIRED_PERMISSIONS = [
-  "owner.hq.manage",
-  "settings.manage",
+  PERMISSION.OWNER_HQ_MANAGE,
+  PERMISSION.SETTINGS_MANAGE,
 ] as const;
+
+/**
+ * Reduces the raw Permission names attached to a staff member's roles into the
+ * set a session is allowed to hold.
+ *
+ * Fail-closed by design: a grant whose name is not in the canonical catalog
+ * (src/lib/permissions.ts) grants nothing at all. Matching is exact and
+ * case-sensitive, so a row that merely mis-spells a canonical name — including
+ * one that is only mis-cased — is a denial, not something to repair. Every
+ * dropped grant is logged so the offending row can be found and corrected.
+ */
+export function resolveCanonicalGrantPermissions(
+  grantNames: Iterable<unknown>,
+  staffId?: string
+): string[] {
+  const permissions = new Set<string>();
+
+  for (const grantName of grantNames) {
+    const definition = getPermissionDefinition(grantName);
+    if (definition) {
+      permissions.add(definition.name);
+      continue;
+    }
+    console.warn(
+      `[auth] Ignored non-canonical permission grant "${String(grantName)}" for staff ${staffId ?? "unknown"}.`
+    );
+  }
+
+  return [...permissions];
+}
 
 export function normalizeString(value: unknown): string | null {
   if (typeof value === "string") {
@@ -73,30 +117,28 @@ export function normalizePermissionList(value: unknown): string[] {
   return singlePermission ? [singlePermission] : [];
 }
 
+/**
+ * Extracts a bearer token from the `Authorization` header ONLY.
+ *
+ * PHASE C CORRECTION
+ * The previous implementation also accepted cookies named `sb-access-token`,
+ * `supabase-auth-token` or `sb-auth-token`. Those names never matched the cookies
+ * written by `@supabase/ssr`, which are named `sb-<project-ref>-auth-token`
+ * (chunked with `.0`, `.1`, … suffixes) and are not raw JWTs. That fallback could
+ * therefore never authenticate a browser request, and keeping it made the
+ * authentication contract look like it supported cookies when it did not.
+ *
+ * Browser sessions are now resolved from cookies correctly and server-side by
+ * `resolveSessionUser()` via the Supabase SSR server client.
+ */
 export function getBearerToken(request: Request | NextRequest): string | null {
   const authHeader = request.headers.get("authorization");
-  if (authHeader) {
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (match) {
-      return match[1].trim();
-    }
+  if (!authHeader) {
+    return null;
   }
 
-  const cookieHeader = request.headers.get("cookie") ?? "";
-  const cookies = cookieHeader.split(";").map((entry) => entry.trim());
-  for (const cookie of cookies) {
-    const [name, ...values] = cookie.split("=");
-    const cookieName = name?.trim();
-    const cookieValue = values.join("=").trim();
-    if (
-      cookieName &&
-      ["sb-access-token", "supabase-auth-token", "sb-auth-token"].includes(cookieName)
-    ) {
-      return cookieValue || null;
-    }
-  }
-
-  return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
 }
 
 export function requireStaff(staff: { status?: string | null } | null | undefined) {
@@ -300,40 +342,101 @@ export function resolveCanonicalRoleName(
   return sorted[0] ?? "STAFF";
 }
 
-export async function resolveAuthenticatedStaffContext(
-  request: Request | NextRequest,
-  requiredPermissions: string[] = []
-): Promise<AuthenticatedStaffContext> {
-  const token = getBearerToken(request);
-  if (!token) {
+/**
+ * Resolves the authenticated Supabase user from whichever transport is present.
+ *
+ * Transport 1 — `Authorization: Bearer <jwt>` (API / server-to-server clients).
+ *   The JWT is validated with the service-role key. Fails closed: it never falls
+ *   back to the anon key, which has no authority to validate tokens server-side.
+ *
+ * Transport 2 — Supabase SSR cookies (the browser POS).
+ *   Resolved server-side by the Supabase SSR server client, which is the only
+ *   correct way to read an `@supabase/ssr` session. No client-supplied token is
+ *   involved, so the browser never has to hold or forward a credential.
+ *
+ * Throws AuthGuardError(401) when no valid session exists, and
+ * AuthGuardError(500) when the server is not configured (fail closed).
+ */
+async function resolveAuthenticatedUser(request: Request | NextRequest): Promise<User> {
+  const bearerToken = getBearerToken(request);
+
+  if (bearerToken) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    // SECURITY: Must fail closed. Never fall back to anon key for privileged server operations.
+    // The anon key does not have the authority to validate JWT tokens server-side.
+    if (!supabaseUrl || !supabaseServiceRoleKey) {
+      throw new AuthGuardError(
+        "BLOCKED_EXTERNAL_DEPENDENCY: Server-side auth requires SUPABASE_SERVICE_ROLE_KEY. Anon key fallback is not permitted.",
+        500
+      );
+    }
+
+    const client = createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+
+    const { data, error } = await client.auth.getUser(bearerToken);
+    if (error || !data.user) {
+      throw new AuthGuardError("Invalid or expired session.", 401);
+    }
+
+    return data.user as User;
+  }
+
+  const sessionUser = await resolveSessionUser();
+  if (!sessionUser) {
     throw new AuthGuardError("Authentication required.", 401);
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  return sessionUser;
+}
 
-  // SECURITY: Must fail closed. Never fall back to anon key for privileged server operations.
-  // The anon key does not have the authority to validate JWT tokens server-side.
-  if (!supabaseUrl || !supabaseServiceRoleKey) {
+/**
+ * Resolves the current user from Supabase SSR cookies (browser sessions).
+ * Returns null when there is no valid session; throws on missing configuration.
+ */
+async function resolveSessionUser(): Promise<User | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
     throw new AuthGuardError(
-      "BLOCKED_EXTERNAL_DEPENDENCY: Server-side auth requires SUPABASE_SERVICE_ROLE_KEY. Anon key fallback is not permitted.",
+      "BLOCKED_EXTERNAL_DEPENDENCY: Session authentication requires NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.",
       500
     );
   }
 
-  const client = createClient(supabaseUrl, supabaseServiceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
+  try {
+    // Lazy import keeps `next/headers` out of the module graph for non-Next
+    // consumers (the node:test suite imports this module directly).
+    const { createServerSessionClient } = await import("./supabase-server");
+    const supabase = await createServerSessionClient();
+    const { data, error } = await supabase.auth.getUser();
 
-  const { data, error } = await client.auth.getUser(token);
-  if (error || !data.user) {
-    throw new AuthGuardError("Invalid or expired session.", 401);
+    if (error || !data.user) {
+      return null;
+    }
+
+    return data.user as User;
+  } catch (error) {
+    if (error instanceof AuthGuardError) throw error;
+    // A missing Next.js request scope (cookies() unavailable) or a malformed
+    // cookie payload both mean "no authenticated session", not a server fault.
+    return null;
   }
+}
 
-  const user = data.user as User;
+export async function resolveAuthenticatedStaffContext(
+  request: Request | NextRequest,
+  requiredPermissions: string[] = []
+): Promise<AuthenticatedStaffContext> {
+  const user = await resolveAuthenticatedUser(request);
+
   const { prisma } = await import("./prisma");
   const staff = await prisma.staff.findFirst({
     where: {
@@ -369,12 +472,18 @@ export async function resolveAuthenticatedStaffContext(
     throw new AuthGuardError("Organization context is missing.", 403);
   }
 
-  const permissions = new Set<string>();
-  for (const assignment of staff.roles) {
-    for (const permissionAssignment of assignment.role.permissions) {
-      permissions.add(permissionAssignment.permission.name);
-    }
-  }
+  // Grants are resolved through the canonical catalog (src/lib/permissions.ts):
+  // a Permission row whose name is not a catalog entry cannot widen a session's
+  // authority, and a mis-cased row still resolves to its canonical name instead
+  // of being silently ignored. Comparison below stays case-insensitive.
+  const permissions = new Set<string>(
+    resolveCanonicalGrantPermissions(
+      staff.roles.flatMap((assignment) =>
+        assignment.role.permissions.map((permissionAssignment) => permissionAssignment.permission.name)
+      ),
+      staff.id
+    )
+  );
 
   // Deterministic multi-role resolution: platform roles take precedence, then
   // owner, then other tenant roles sorted by code (alphabetical) for stability.
@@ -398,8 +507,11 @@ export async function resolveAuthenticatedStaffContext(
     userId: user.id,
     email: user.email ?? staff.email,
     staffId: staff.id,
+    staffName: [staff.firstName, staff.lastName].filter(Boolean).join(" ").trim() || staff.email,
     organizationId: staff.organizationId,
-    outletId: staff.outletId ?? "",
+    // Reported truthfully. Outlet-bound actions must call requireOutlet(), which
+    // rejects with 403 rather than silently operating on an empty outlet id.
+    outletId: staff.outletId ?? null,
     roleName: resolvedRoleName,
     permissions: [...permissions],
     status: staffStatus as StaffStatus,

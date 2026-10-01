@@ -44,15 +44,14 @@ import { createClient } from "@supabase/supabase-js";
 import { timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { AuthGuardError, getBearerToken } from "@/lib/auth";
+import { OWNER_PROVISION_PERMISSIONS } from "@/lib/permissions";
 
-// The canonical set of permissions granted to an OWNER role on provisioning.
-// These are the minimum required for Owner HQ access and system configuration.
-const OWNER_PERMISSIONS = [
-  { name: "owner.hq.manage", description: "Access and manage the Owner HQ dashboard" },
-  { name: "settings.manage", description: "Configure organization and outlet settings" },
-  { name: "orders.read", description: "View orders" },
-  { name: "orders.create", description: "Create orders" },
-] as const;
+// The permission set granted to an OWNER role at provisioning time. It is
+// defined once in the canonical catalog (src/lib/permissions.ts) and inserted
+// into the global Permission table by migration
+// 202610010001_permission_catalog_reference_data. This route only links the
+// existing global rows to the new OWNER role — it never defines vocabulary.
+const OWNER_PERMISSIONS = OWNER_PROVISION_PERMISSIONS;
 
 function slugify(value: string): string {
   return value
