@@ -1,15 +1,34 @@
 "use client";
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
-import { Product } from "@/data/products";
 
-interface CartItem extends Product {
+/**
+ * Cart state for the POS.
+ *
+ * PHASE C: the previous `Product` type came from `src/data/products.ts`, which
+ * has been deleted along with its dummy catalog. The cart now holds real
+ * database-backed menu items (structurally identical to the POS `MenuItem`), so
+ * the cart and the catalog can never diverge.
+ */
+export interface CartProduct {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  category: string;
+  categoryId: string;
+  imageUrl?: string | null;
+  isAvailable: boolean;
+  badge?: "Signature" | "Best Seller" | "New" | "Promo";
+}
+
+export interface CartItem extends CartProduct {
   quantity: number;
 }
 
 interface CartContextType {
   cart: CartItem[];
-  addToCart: (product: Product) => void;
+  addToCart: (product: CartProduct) => void;
   removeFromCart: (productId: string) => void;
   updateQuantity: (productId: string, delta: number) => void;
   clearCart: () => void;
@@ -21,7 +40,7 @@ const CartContext = createContext<CartContextType | undefined>(undefined);
 export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  const addToCart = (product: Product) => {
+  const addToCart = (product: CartProduct) => {
     setCart((prev) => {
       const existing = prev.find((item) => item.id === product.id);
       if (existing) {

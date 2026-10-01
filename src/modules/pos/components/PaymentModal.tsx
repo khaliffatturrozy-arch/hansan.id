@@ -10,7 +10,6 @@ import {
   CreditCard,
   Check,
   AlertCircle,
-  Sparkles,
   ArrowRight,
   ShieldCheck,
 } from "lucide-react";
@@ -24,9 +23,7 @@ interface PaymentModalProps {
   onConfirmPayment: (data: {
     method: PaymentMethod;
     amountPaid: number;
-    changeAmount: number;
     bankName?: string;
-    approvalCode?: string;
   }) => void;
 }
 
@@ -45,9 +42,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
   // Card state
   const [selectedBank, setSelectedBank] = useState<string>("BCA");
-  const [approvalCode, setApprovalCode] = useState<string>("");
 
-  // QRIS state
+  // QRIS state.
+  // PHASE C: there is no QRIS integration. This flag only records that the
+  // operator confirmed settlement manually. It is NOT payment verification and
+  // is never presented as such.
   const [qrisPaid, setQrisPaid] = useState<boolean>(false);
 
   // Sync cashGiven when grandTotal changes or modal opens
@@ -55,7 +54,6 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     if (isOpen) {
       setCashGiven(grandTotal);
       setQrisPaid(false);
-      setApprovalCode("");
     }
   }, [isOpen, grandTotal]);
 
@@ -88,26 +86,21 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const handleConfirm = () => {
     if (activeMethod === "CASH") {
       if (!isCashValid) return;
-      onConfirmPayment({
-        method: "CASH",
-        amountPaid: cashGiven,
-        changeAmount: Math.max(0, cashChange),
-      });
-    } else if (activeMethod === "QRIS") {
-      onConfirmPayment({
-        method: "QRIS",
-        amountPaid: grandTotal,
-        changeAmount: 0,
-      });
-    } else if (activeMethod === "CARD") {
-      onConfirmPayment({
-        method: "CARD",
-        amountPaid: grandTotal,
-        changeAmount: 0,
-        bankName: selectedBank,
-        approvalCode: approvalCode || "EDC-" + Math.floor(100000 + Math.random() * 900000),
-      });
+      // Change is NOT sent: the server derives it from the authoritative total.
+      onConfirmPayment({ method: "CASH", amountPaid: cashGiven });
+      return;
     }
+
+    if (activeMethod === "QRIS") {
+      onConfirmPayment({ method: "QRIS", amountPaid: grandTotal });
+      return;
+    }
+
+    // PHASE C: no approval code is produced or sent. The previous
+    // `approvalCode || "EDC-" + Math.floor(...random...)` fabricated an approval
+    // number that looked like real EDC evidence. The server does not accept or
+    // store an approval code, because no payment gateway exists to verify one.
+    onConfirmPayment({ method: "CARD", amountPaid: grandTotal, bankName: selectedBank });
   };
 
   return (
@@ -151,7 +144,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white border border-brand-200/80 text-brand-700 text-xs font-semibold shadow-2xs">
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Verifikasi Otomatis</span>
+            <span>Tanpa Verifikasi Otomatis</span>
           </div>
         </div>
 
@@ -282,59 +275,24 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             </div>
           )}
 
-          {/* 2. QRIS DINAMIS */}
+          {/* 2. QRIS — NOT AVAILABLE */}
           {activeMethod === "QRIS" && (
             <div className="flex flex-col items-center justify-center text-center py-2 space-y-4">
-              <div className="relative p-4 bg-white rounded-3xl border-2 border-dashed border-gray-200 shadow-md">
-                {/* Simulated QR Code SVG Pattern */}
-                <div className="w-48 h-48 bg-gray-900 rounded-2xl p-2.5 flex flex-col justify-between items-center relative overflow-hidden">
-                  <div className="absolute inset-0 bg-[radial-gradient(#ffffff_2px,transparent_2px)] [background-size:8px_8px] opacity-90 p-4" />
-                  
-                  {/* Corner Targets */}
-                  <div className="w-full flex justify-between z-10">
-                    <div className="w-10 h-10 bg-white rounded-lg p-1.5 flex items-center justify-center">
-                      <div className="w-full h-full bg-gray-900 rounded-sm flex items-center justify-center">
-                        <div className="w-3 h-3 bg-white rounded-xs" />
-                      </div>
-                    </div>
-                    <div className="w-10 h-10 bg-white rounded-lg p-1.5 flex items-center justify-center">
-                      <div className="w-full h-full bg-gray-900 rounded-sm flex items-center justify-center">
-                        <div className="w-3 h-3 bg-white rounded-xs" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Center Brand Badge */}
-                  <div className="z-10 px-2.5 py-1 rounded-md bg-brand-500 text-white text-[10px] font-black tracking-wider shadow-md">
-                    HANSAN QRIS
-                  </div>
-
-                  <div className="w-full flex justify-start z-10">
-                    <div className="w-10 h-10 bg-white rounded-lg p-1.5 flex items-center justify-center">
-                      <div className="w-full h-full bg-gray-900 rounded-sm flex items-center justify-center">
-                        <div className="w-3 h-3 bg-white rounded-xs" />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {qrisPaid && (
-                  <div className="absolute inset-0 bg-emerald-600/95 backdrop-blur-xs rounded-3xl flex flex-col items-center justify-center text-white p-4 animate-in zoom-in duration-200">
-                    <div className="w-12 h-12 rounded-full bg-white text-emerald-600 flex items-center justify-center mb-2 shadow-lg">
-                      <Check className="w-7 h-7 stroke-[3]" />
-                    </div>
-                    <span className="font-extrabold text-sm">QRIS Berhasil Dibayar!</span>
-                    <span className="text-xs text-emerald-100 mt-0.5">Saldo terverifikasi masuk</span>
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <p className="text-xs font-extrabold text-gray-800 tracking-wider">
-                  NMID: ID1020349182391 • HANSAN CAFE 01
+              {/* PHASE C — the previous build rendered a decorative "QR" pattern,
+                  a FABRICATED merchant identifier ("NMID: ID1020349182391"), the
+                  hardcoded business name "HANSAN CAFE 01", and an overlay that
+                  claimed "Saldo terverifikasi masuk". A scannable-looking code
+                  carrying a made-up merchant ID, plus an unverifiable success
+                  claim, is payment fabrication. There is no QRIS integration, so
+                  none of it can be shown, and the cashier is told plainly. */}
+              <div className="p-6 w-full rounded-3xl border-2 border-dashed border-gray-200 bg-white flex flex-col items-center text-center space-y-2">
+                <QrCode className="w-10 h-10 text-gray-300" />
+                <p className="text-sm font-extrabold text-gray-800">
+                  QRIS belum tersedia
                 </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Arahkan pelanggan scan kode QRIS menggunakan GoPay, OVO, Dana, atau BCA Mobile
+                <p className="text-xs text-gray-500 leading-relaxed max-w-sm">
+                  Integrasi QRIS belum dikonfigurasi. HANSAN belum dapat membuat
+                  kode QR pembayaran maupun memverifikasi pembayaran QRIS.
                 </p>
               </div>
 
@@ -344,13 +302,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                   onClick={() => setQrisPaid(true)}
                   className="px-4 py-2 rounded-xl bg-gray-100 hover:bg-emerald-50 text-gray-700 hover:text-emerald-700 border border-gray-200 text-xs font-bold transition-all flex items-center gap-1.5"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Simulasikan Pembayaran QRIS Berhasil</span>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Konfirmasi diterima manual oleh kasir</span>
                 </button>
               ) : (
-                <div className="text-xs font-bold text-emerald-600 flex items-center gap-1">
-                  <Check className="w-4 h-4" />
-                  <span>Siap cetak struk</span>
+                <div className="text-xs font-semibold text-amber-700 flex items-center gap-1">
+                  <AlertCircle className="w-4 h-4" />
+                  <span>Dikonfirmasi manual — belum diverifikasi QRIS</span>
                 </div>
               )}
             </div>
@@ -381,19 +339,20 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                  Nomor Approval / Trace ID (EDC)
-                </label>
-                <input
-                  type="text"
-                  value={approvalCode}
-                  onChange={(e) => setApprovalCode(e.target.value)}
-                  placeholder="Contoh: 849201"
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">
-                  Masukkan nomor trace dari struk fisik mesin EDC setelah nasabah memasukkan PIN.
+              {/* PHASE C: the approval-code input was removed.
+                  An input whose value the server neither accepts nor stores
+                  would mislead the operator into believing an EDC trace was
+                  recorded. Capture of a real trace requires a payment gateway
+                  integration, which does not exist yet. */}
+              <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-100 text-amber-900 text-xs space-y-1">
+                <div className="flex items-center gap-2.5 font-semibold">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <span>Trace ID EDC belum dapat disimpan.</span>
+                </div>
+                <p className="text-amber-800/90 leading-relaxed">
+                  Integrasi payment gateway belum tersedia, sehingga HANSAN tidak
+                  memverifikasi maupun menyimpan nomor approval. Catat nomor trace
+                  secara manual pada struk fisik mesin EDC.
                 </p>
               </div>
 

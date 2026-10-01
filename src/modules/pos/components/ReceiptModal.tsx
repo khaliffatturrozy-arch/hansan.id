@@ -3,6 +3,7 @@
 import React, { useRef } from "react";
 import { CompletedTransaction } from "../types/pos";
 import { formatRupiah } from "@/lib/utils";
+import { PB1_TAX_RATE } from "@/lib/pricing";
 import {
   Printer,
   CheckCircle2,
@@ -75,20 +76,23 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             ref={receiptRef}
             className="w-full bg-white rounded-xl p-5 shadow-sm border border-gray-200 text-gray-800 text-xs font-mono space-y-3"
           >
-            {/* Header */}
+            {/* Header — PHASE C.
+                The previous receipt printed a hardcoded merchant identity:
+                "HANSAN CAFE", "Outlet 01 - Jakarta", a Senopati street address and
+                a WhatsApp number. None of that exists in the database, so a
+                receipt was asserting a business identity the system does not
+                know. The real organization and outlet names are used instead, and
+                address/contact details are omitted because they are not modeled
+                yet. The product name is used only as a neutral header. */}
             <div className="text-center space-y-0.5 pb-3 border-b border-dashed border-gray-300">
               <h3 className="text-base font-black tracking-tight text-gray-900">
-                HANSAN CAFE
+                {transaction.organizationName || "HANSAN OS"}
               </h3>
-              <p className="text-[11px] text-gray-500 font-sans">
-                Outlet 01 - Jakarta
-              </p>
-              <p className="text-[10px] text-gray-400 font-sans">
-                Jl. Senopati Raya No. 88, Kebayoran Baru
-              </p>
-              <p className="text-[10px] text-gray-400 font-sans">
-                WhatsApp: 0812-3456-7890
-              </p>
+              {transaction.outletName && (
+                <p className="text-[11px] text-gray-500 font-sans">
+                  {transaction.outletName}
+                </p>
+              )}
             </div>
 
             {/* Meta Info */}
@@ -117,7 +121,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               </div>
               <div className="flex justify-between">
                 <span>Pelanggan</span>
-                <span>{transaction.customerName || "Tamu"}</span>
+                <span>{transaction.customerName || "—"}</span>
               </div>
             </div>
 
@@ -154,7 +158,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <span>{formatRupiah(transaction.subtotal)}</span>
               </div>
               <div className="flex justify-between text-gray-600">
-                <span>Pajak Restoran PB1 (10%)</span>
+                <span>Pajak Restoran PB1 ({PB1_TAX_RATE * 100}%)</span>
                 <span>{formatRupiah(transaction.taxPb1)}</span>
               </div>
               <div className="flex justify-between text-sm font-black text-gray-900 pt-1">
@@ -171,12 +175,10 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                   {getPaymentMethodLabel()}
                 </span>
               </div>
-              {transaction.paymentMethod === "CARD" && (
-                <div className="flex justify-between text-gray-500">
-                  <span>Trace / Approval</span>
-                  <span>{transaction.approvalCode}</span>
-                </div>
-              )}
+              {/* PHASE C: the "Trace / Approval" row was removed. No approval code
+                  is captured or stored, because no payment gateway exists to
+                  verify one, and printing a fabricated trace number on a
+                  customer-facing receipt is not acceptable. */}
               <div className="flex justify-between text-gray-600">
                 <span>Uang Diterima</span>
                 <span>{formatRupiah(transaction.amountPaid)}</span>
@@ -192,11 +194,8 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               <p className="font-bold text-gray-800">
                 Terima kasih atas kunjungan Anda!
               </p>
-              <p className="text-[10px] text-gray-400">
-                WiFi: <span className="font-bold text-gray-700">hansancoffee</span> (Pass: <span className="font-bold text-gray-700">kopihansan</span>)
-              </p>
               <p className="text-[9px] text-gray-400 pt-1">
-                Powered by Hansan OS • www.hansan.id
+                Powered by Hansan OS
               </p>
             </div>
           </div>

@@ -4,7 +4,7 @@ import React from "react";
 import Image from "next/image";
 import { MenuItem } from "../types/pos";
 import { formatRupiah } from "@/lib/utils";
-import { Plus, Check } from "lucide-react";
+import { Plus, Check, ImageOff } from "lucide-react";
 
 interface MenuCardProps {
   item: MenuItem;
@@ -41,14 +41,23 @@ export const MenuCard: React.FC<MenuCardProps> = ({
     >
       {/* Image Thumbnail with Overlay Badges */}
       <div className="relative aspect-[4/3] w-full overflow-hidden bg-gray-100">
-        <Image
-          src={item.imageUrl}
-          alt={item.name}
-          fill
-          sizes="(max-width: 768px) 50vw, 33vw"
-          className="object-cover group-hover:scale-105 transition-transform duration-300 ease-out"
-        />
-
+        {item.imageUrl ? (
+          <Image
+            src={item.imageUrl}
+            alt={item.name}
+            fill
+            sizes="(max-width: 768px) 50vw, 33vw"
+            className="object-cover group-hover:scale-105 transition-transform duration-300 ease-out"
+          />
+        ) : (
+          /* Real menu items may legitimately have no image. A neutral placeholder
+             is shown rather than substituting stock photography, which would
+             misrepresent the actual product. */
+          <div className="absolute inset-0 flex items-center justify-center text-gray-300">
+            <ImageOff className="w-8 h-8" aria-hidden="true" />
+            <span className="sr-only">No image available</span>
+          </div>
+        )}
         {/* Badge Overlay */}
         {item.badge && (
           <div className="absolute top-2.5 left-2.5 z-10">
@@ -62,12 +71,18 @@ export const MenuCard: React.FC<MenuCardProps> = ({
           </div>
         )}
 
-        {/* Stock status indicator */}
-        <div className="absolute top-2.5 right-2.5 z-10">
-          <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-black/60 backdrop-blur-md text-white">
-            {item.stockCount} left
-          </span>
-        </div>
+        {/* Availability indicator.
+            PHASE C: the numeric "N left" badge was removed. MenuItem.stockCount
+            is a stored counter that no code path decrements yet (inventory
+            deduction belongs to a later phase), so presenting it as live stock
+            would be misleading. Availability is operator-controlled real data. */}
+        {!item.isAvailable && (
+          <div className="absolute top-2.5 right-2.5 z-10">
+            <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-600/90 backdrop-blur-md text-white uppercase tracking-wide">
+              Unavailable
+            </span>
+          </div>
+        )}
 
         {/* Selected in Cart Indicator Pill */}
         {quantityInCart > 0 && (

@@ -4,11 +4,13 @@ import React from "react";
 import Image from "next/image";
 import { CartItem, OrderType } from "../types/pos";
 import { formatRupiah } from "@/lib/utils";
+import { computeOrderTotals } from "@/lib/pricing";
 import {
   ShoppingBag,
   Trash2,
   Plus,
   Minus,
+  ImageOff,
   UtensilsCrossed,
   Package,
   User,
@@ -50,8 +52,9 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
     (sum, ci) => sum + ci.item.price * ci.quantity,
     0
   );
-  const pb1Tax = Math.round(subtotal * 0.1); // 10% PB1 Restaurant Tax
-  const grandTotal = subtotal + pb1Tax;
+  // Shared pricing rules: the same module the server uses to persist the order,
+  // so the displayed total cannot drift from the charged total.
+  const { taxPb1: pb1Tax, totalAmount: grandTotal } = computeOrderTotals(subtotal);
   const totalItemCount = items.reduce((sum, ci) => sum + ci.quantity, 0);
 
   return (
@@ -162,12 +165,21 @@ export const CartSidebar: React.FC<CartSidebarProps> = ({
             <div key={ci.item.id} className="pt-3 first:pt-0 flex gap-3">
               {/* Thumbnail */}
               <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-gray-100 flex-shrink-0 border border-gray-100">
-                <Image
-                  src={ci.item.imageUrl}
-                  alt={ci.item.name}
-                  fill
-                  className="object-cover"
-                />
+                {ci.item.imageUrl ? (
+                  <Image
+                    src={ci.item.imageUrl}
+                    alt={ci.item.name}
+                    fill
+                    className="object-cover"
+                  />
+                ) : (
+                  /* PHASE C: real menu items may have no image. A neutral
+                     placeholder is shown rather than stock photography. */
+                  <div className="absolute inset-0 flex items-center justify-center text-gray-300">
+                    <ImageOff className="w-4 h-4" aria-hidden="true" />
+                    <span className="sr-only">No image available</span>
+                  </div>
+                )}
               </div>
 
               {/* Item Info & Modifiers */}
