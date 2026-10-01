@@ -341,11 +341,19 @@ describe("auth failure modes", () => {
     assert.equal(getBearerToken(request), "test_token_abc");
   });
 
-  it("extracts token from cookie if Authorization header is absent", () => {
-    const request = new Request("http://localhost/api/orders", {
-      headers: { Cookie: "sb-access-token=cookie_token_xyz" },
-    });
-    assert.equal(getBearerToken(request), "cookie_token_xyz");
+  it("does NOT read a bearer token from cookies", () => {
+    // PHASE C CORRECTION: the previous test asserted that a cookie named
+    // "sb-access-token" was treated as a bearer token. That never matched the
+    // cookies @supabase/ssr actually writes ("sb-<project-ref>-auth-token"), so
+    // the behaviour it locked in could never authenticate a browser request and
+    // only made the auth contract look cookie-aware when it was not.
+    // Browser sessions are now resolved server-side by resolveSessionUser().
+    for (const name of ["sb-access-token", "supabase-auth-token", "sb-auth-token"]) {
+      const request = new Request("http://localhost/api/orders", {
+        headers: { Cookie: `${name}=cookie_token_xyz` },
+      });
+      assert.equal(getBearerToken(request), null);
+    }
   });
 });
 
