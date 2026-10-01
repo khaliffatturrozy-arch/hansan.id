@@ -1,5 +1,43 @@
 # HANSAN Production Architecture Audit
 
+> ## DOCUMENT STATUS — PARTIALLY HISTORICAL (Phase A note)
+>
+> This audit was produced **before** the Phase 13/14 auth, identity, and platform
+> work. Some of its findings are now **outdated** and must not be read as the
+> current state. In particular, the statements below are no longer accurate:
+>
+> - *"No authenticated server-side session retrieval path exists."* —
+>   `src/lib/auth.ts` now performs server-side Supabase JWT validation with the
+>   service-role key and fails closed.
+> - *"No middleware exists."* — `src/middleware.ts` now exists (session refresh and
+>   `/owner` route gating).
+> - *"The repository does not contain a role model or RBAC rules."* — `Role`,
+>   `Permission`, `RolePermission`, and `StaffRole` models now exist, with
+>   server-side permission checks in `/api/orders`.
+> - *"No organization or outlet domain model is present."* — `Organization`,
+>   `Outlet`, and `Staff` models now exist and order records are tenant-scoped.
+> - *"No audit trail was identified."* — `AuditLog` now exists and is written by
+>   provisioning and bootstrap.
+>
+> Findings in this document that **remain valid** and were re-confirmed in Phase A:
+> no RLS policies, inventory is incomplete/deferred, KDS is not implemented, no
+> payment provider integration, no refund lifecycle, no offline/sync
+> architecture, no CI or deployment pipeline.
+>
+> **Corrected after the Phase B/C foundation commits:** the item *"`Category`
+> and `MenuItem` are not tenant-scoped"* is no longer valid — both models are
+> tenant-scoped through a composite `(organizationId, id)` foreign key, and
+> `Order.organizationId/outletId/staffId` are NOT NULL (migration
+> `202609300001`, already applied to the live database). The hardcoded demo
+> catalog `src/data/products.ts` has been deleted, `/api/menu` and
+> `/api/session` serve tenant data, and tenant staff management exists at
+> `/owner/staff`. Tenant isolation is still **application-layer only** because
+> there are still no RLS policies.
+>
+> For the current, evidence-based status see
+> [FEATURE-COMPLETE-GATE.md](FEATURE-COMPLETE-GATE.md) and
+> [HANSAN-CURRENT-STATE-REPORT.md](HANSAN-CURRENT-STATE-REPORT.md).
+
 ## A. Repository Status
 
 ### Stack

@@ -1,6 +1,53 @@
 # HANSAN CURRENT STATE REPORT
 
+> ## DOCUMENT STATUS (Phase A — Truth Restoration)
+>
+> **Read this notice before relying on anything below.**
+>
+> 1. **Parts of this document are historical.** It records an environment and
+>    repository state captured at an earlier point (branch `main`, HEAD
+>    `debff2705…`). The branch is `phase14-manual`; HEAD was `501fc23` when this
+>    notice was written and has advanced since.
+> 2. **Environment observations below are historical.** Statements such as
+>    `SUPABASE_SERVICE_ROLE_KEY: MISSING` or "public host failed DNS" describe that
+>    earlier capture. They are **not** a current environment report and must not be
+>    used to infer the present configuration.
+> 3. **No status in this document implies production capability.** Sections that
+>    describe in-memory domain code (`src/lib/*.ts`) refer to unconnected
+>    simulations that no application code imports.
+> 4. **Corrections applied in Phase A** for accuracy: the POS section, the testing
+>    section, the git section, the implementation matrix, and the readiness
+>    section. The destructive demo seed (`prisma/seed.ts`) has been removed.
+> 5. For the authoritative, consolidated, evidence-based status see
+>    [FEATURE-COMPLETE-GATE.md](FEATURE-COMPLETE-GATE.md) and
+>    [PRODUCTION-AUDIT.md](PRODUCTION-AUDIT.md).
+> 6. **Refreshed after the Phase B/C foundation commits.** Two statements in this
+>    report are no longer true: the POS no longer renders a hardcoded catalog
+>    (`src/data/products.ts` is deleted; the catalog comes from `/api/menu` and
+>    identity from `/api/session`), and `Category`/`MenuItem` **are** now
+>    tenant-scoped through migration `202609300001`, with `Order` tenant keys
+>    NOT NULL. What remains true is the rest: **no RLS**, no row-level security,
+>    inventory is never decremented by the POS, no KDS, no refunds, and the
+>    offline requirement is unimplemented. The order path is implemented in code
+>    and covered by unit tests, but has never been exercised through a real
+>    authenticated browser session.
+
 ## 1. Executive summary
+
+> **Phase A correction to this summary.** The original summary attributed
+> production blockers almost entirely to configuration and environment
+> verification. That is incomplete. The current audit establishes that the
+> blockers are also **functional**: the POS cannot create an order end-to-end, the
+> catalog tables are not tenant-scoped, there is no row-level security, inventory
+> is never decremented, and the offline requirement is entirely unimplemented.
+> The in-memory domain modules described throughout this report are **simulations
+> with unit tests**, not implemented features.
+>
+> *Refreshed after the Phase B/C foundation commits: the POS order path is now
+> implemented end to end in code (unit-tested; never exercised through a real
+> authenticated browser session) and the catalog tables are tenant-scoped. The
+> remaining blockers — no RLS, no inventory decrement, no KDS, no refunds, no
+> offline support — still stand.*
 
 The HANSAN repository is a Next.js + TypeScript + Prisma application with a clear architectural intent for a multi-tenant hospitality platform. The codebase contains a partial but real implementation of the platform foundation: organization/outlet/staff/role/permission modeling, a protected order API, a PostgreSQL-backed Prisma layer, and security guard logic that checks organization, outlet, role, and permission context before allowing actions.
 
@@ -223,10 +270,10 @@ The security tests in [src/lib/auth-security.test.ts](src/lib/auth-security.test
 - manipulated client role rejected
 - manipulated client permission array rejected
 
-Earlier verification result:
+Historical verification result (superseded by the Phase A result in §24):
 
-- 7 tests passed
-- 0 failed
+- 7 tests passed in `auth-security.test.ts`
+- 0 failed in that file
 
 ### Runtime configuration risk
 
@@ -281,16 +328,33 @@ The API enforces:
 
 ### Current status
 
-- UI: IMPLEMENTED at a moderate level
-- API: IMPLEMENTED
-- Persistence: PARTIAL but real
+- UI: PARTIAL — the cashier interface renders from `GET /api/menu` and `GET /api/session`; the hardcoded in-repo catalog (`src/data/products.ts`, IDs `"1".."12"`) and the fake "Online & Synced" badge have been removed, and the header now shows the real outlet, organization and cashier from the authenticated session. With an empty database the screen shows an honest empty state rather than demo products. No local queue/sync exists, so the screen makes no connectivity claim at all
+- API: IMPLEMENTED — real, permission-gated, tenant/outlet-scoped order endpoint at `src/app/api/orders/route.ts`
+- Persistence: IMPLEMENTED for orders (atomic `prisma.$transaction` in `src/lib/order-service.ts`); still missing a payment ledger, refund model, and inventory ledger
 - Inventory deduction: intentionally deferred and not implemented
 - Payment settlement flow: not complete in the repo snapshot
 - Role and outlet enforcement: implemented in code and validated by test
 
 ### POS status summary
 
-The project has a real cashier-order backbone, but it is not yet a full production POS. The order creation path is real, but many operational requirements remain incomplete.
+> **Phase A correction.** The original summary said "the order creation path is
+> real." That is true of the **service and API layer only**. The POS **cannot**
+> currently create an order end-to-end:
+>
+> - `PosCashierView` posts to `/api/orders` **without any authenticated session**
+>   (no `Authorization` header, and the cookie-name fallback in
+>   `src/lib/auth.ts#getBearerToken` does not match `@supabase/ssr` cookie names),
+>   so the request is rejected with 401.
+> - Even if authentication succeeded, the POS sends catalog IDs `"1".."12"`, which
+>   are hardcoded values that do not exist as `MenuItem` rows (Prisma uses
+>   `cuid()` IDs), so the service rejects the items.
+> - The cashier name is a hardcoded string rather than the authenticated staff
+>   identity, so audit attribution would be false.
+> - Orders are persisted directly with `status: "COMPLETED"`; there is no
+>   PENDING → PROCESSING → READY → COMPLETED lifecycle.
+>
+> The cashier-order backbone exists, but it is not currently exercisable from the
+> product UI.
 
 ---
 
@@ -581,32 +645,36 @@ Conclusion:
 
 ## 24. Testing
 
-The repository contains a real security test file: [src/lib/auth-security.test.ts](src/lib/auth-security.test.ts).
+The repository contains unit tests for the identity/security layer plus tests for the in-memory domain modules: [src/lib/auth-security.test.ts](src/lib/auth-security.test.ts) and 13 other `.test.ts` files under `src/lib/`. A `test` script now exists in `package.json` (added in Phase A).
 
-Verified result earlier in this session:
+Verified result (Phase A, fresh — supersedes the historical figure above):
 
-- 7 tests passed
+- 108 tests passed across 21 suites
 - 0 failed
+- Executed via the project's `npm test` script in `package.json`
 
-This was executed using `ts-node` because the Node test runner could not resolve the TypeScript module via direct `node --test` in the project’s current setup.
+TypeScript Interop note: plain `node --test "src/lib/*.test.ts"` still fails (`Cannot find module './auth'` and `require is not defined in ES module scope`). `ts-node/register` remains required. This is a pre-existing test-runner interop limitation; resolving it properly belongs to a later phase and was deliberately not undertaken in Phase A.
 
-Other validation commands exist in the report requirement, but the final state report does not claim full lint/build success without fresh evidence captured in the final pass. The repository does include the scripts for `lint` and `build`, but the project is not yet at a state where all runtime verification can be claimed complete.
+All required validation commands were executed with fresh output in Phase A and all passed: `npm test` (108/108), `npx tsc --noEmit` (no diagnostics), `npx next lint` (no warnings or errors), `npx prisma validate` (schema valid), `npx next build` (compiled successfully). Important limitation: this suite does not exercise the database, the API routes, or the UI. There is no test for `src/lib/order-service.ts` or for any route handler.
 
 ---
 
 ## 25. Git / version control
 
-Fresh evidence from the repository state check showed:
+### Git state
 
-- branch: `main`
-- local changes: docs updates and untracked files exist
-- `.env` is ignored by Git
-- no push or commit was performed during the final report generation
+Phase A correction — the values below replace the earlier capture:
 
-Current state as of the verification pass:
+- branch: `phase14-manual`
+- HEAD: `501fc23`
+- local changes: only untracked tooling directories (`.cline/`, `.clinerules/`)
+- `.env` is ignored by Git and is not tracked (verified with `git check-ignore -v .env` and `git ls-files --error-unmatch .env`)
+- no commit and no push were performed during Phase A
 
-- working tree: CHANGED / UNCOMMITTED
-- remote configuration: present but not used for a push in this report
+Current state as of the Phase A verification pass:
+
+- working tree: clean except pre-existing untracked tooling directories
+- remote configuration: `origin` → `hansan.id` repository; not pushed in this phase
 
 ---
 
@@ -745,45 +813,60 @@ Status: OPEN
 
 ---
 
-## 33. Implementation matrix
+## 33. Implementation matrix (corrected in Phase A)
+
+> The original matrix used `PARTIAL` for domain **skeletons** and **in-memory
+> simulations**, which overstated them. Corrected below. `SIMULATED` means the
+> code is an unconnected in-memory class with unit tests and no Prisma model, no
+> API route, and no UI.
 
 | Domain | Status |
 |---|---|
-| Platform | PARTIAL |
-| Identity & Access | IMPLEMENTED (foundation) |
-| POS | PARTIAL |
-| Menu & Recipe | PARTIAL |
-| Inventory | PARTIAL |
-| KDS | PARTIAL |
-| Table & Reservation | MISSING |
-| Customer & Loyalty | MISSING |
-| Promotion Engine | MISSING |
-| Payment & Finance | PARTIAL |
-| Tax | PARTIAL |
-| Staff Operations | PARTIAL |
-| Website & Omnichannel | MISSING |
-| Reporting | MISSING |
-| Owner HQ | PARTIAL |
-| Customer Experience Engine | MISSING |
-| Platform Services | PARTIAL |
+| Platform (org / outlet / staff / role / permission / audit / developer access) | PARTIAL — models and auth guard exist; catalog is tenant-scoped since migration `202609300001`; **no RLS** |
+| Identity & Access | IMPLEMENTED (foundation) + role-aware login gateway (`/api/auth/destination`) |
+| POS | PARTIAL — UI renders and submits orders through `/api/orders` using server-resolved identity and prices; **never exercised through a real authenticated browser session** |
+| Order persistence & API | IMPLEMENTED |
+| Menu | PARTIAL — `Category`/`MenuItem` are tenant-scoped and served by `GET /api/menu` (`src/lib/menu-service.ts`); no admin CRUD UI for the catalog yet |
+| Recipe | NOT IMPLEMENTED |
+| Inventory | NOT IMPLEMENTED (in-memory simulation only) |
+| KDS | NOT IMPLEMENTED (placeholder `export {};` stubs; in-memory simulation only) |
+| Table & Reservation | NOT IMPLEMENTED (in-memory simulation only) |
+| Customer & Loyalty | NOT IMPLEMENTED (in-memory simulation only) |
+| Promotion Engine | NOT IMPLEMENTED (in-memory simulation only) |
+| Payment & Finance | NOT IMPLEMENTED — order-level payment fields only; no ledger, no provider, no verification |
+| Tax | PARTIAL — hardcoded 10% PB1 in `order-service.ts`; configurable tax engine is in-memory only |
+| Refunds | NOT IMPLEMENTED |
+| Staff Operations | NOT IMPLEMENTED (in-memory simulation only) |
+| Website & Omnichannel | NOT IMPLEMENTED |
+| Reporting | NOT IMPLEMENTED |
+| Owner HQ | PARTIAL — real DB counts; most metrics are hardcoded empty states |
+| Customer Experience Engine | NOT IMPLEMENTED (in-memory simulation only) |
+| Platform Services | NOT IMPLEMENTED — platform guards have no callers; platform roles cannot be created |
+| Offline POS / Sync | NOT IMPLEMENTED |
+| Dashboard | NOT IMPLEMENTED (placeholder stubs) |
+| Purchasing & Suppliers | NOT IMPLEMENTED |
 
 ---
 
-## 34. Development readiness
+## 34. Development readiness (Phase A)
 
-Architecture: NEEDS DECISION
+Architecture: DEFINED — modular monolith; real domain code currently concentrated in `src/lib`
 
-Database: BLOCKED
+Database: SCHEMA PRESENT AND VALIDATED (`npx prisma validate` passes; 13 models; 7 migrations, all reported applied by `npx prisma migrate status`) — no RLS policies; production project identity still to be confirmed operationally
 
-Authentication: PARTIAL
+Authentication: IMPLEMENTED server-side; runtime correctness depends on the external Supabase project
 
-POS: PARTIAL
+POS: PARTIAL — the order path is implemented in code (`/api/menu`, `/api/session`, `/api/orders`, server-resolved pricing and identity) and unit-tested; it has never been exercised through a real authenticated browser session, and there is no offline queue
 
-Core transaction backbone: PARTIAL
+Core transaction backbone: PARTIAL — persistence and API are real; lifecycle, inventory, and payment settlement are absent
+
+Offline POS: NOT IMPLEMENTED
+
+Test coverage: PARTIAL — 294 unit tests across 65 suites pass (pricing, POS session contract, order request contract, safe API errors, developer access/lifecycle, login destination/gateway, staff provisioning, owner HQ, plus the in-memory domain suites), but none exercise the database, the API routes as HTTP endpoints, or the UI
 
 Production deployment: NOT READY
 
-Next implementation phase: confirm the live Supabase project identity and database endpoint, then complete the end-to-end auth and tenant-scoped order validation before expanding the operational modules.
+Next implementation phase (Phase B — Tenant-Safe Data Foundation): make the data foundation tenant-safe before adding features — add `organizationId` (and outlet scoping where applicable) to `Category`/`MenuItem`, make `Order` tenant keys non-nullable, add the missing composite indexes, resolve the platform-role constraint contradiction, and decide/implement the row-level security posture. Feature work must not precede this.
 
 ---
 
@@ -818,8 +901,17 @@ Next implementation phase: confirm the live Supabase project identity and databa
 
 ## Final report status
 
-This repository contains a real but incomplete foundation for a multi-tenant hospitality system. The architecture is clear and the code has a working security/auth foundation, a real order API, and a real Prisma schema. The project is not yet production ready because the underlying Supabase project identity and database connectivity remain unverified in the current environment. No source code or database changes were made as part of this report generation.
+This repository contains a real but incomplete foundation for a multi-tenant hospitality system. The architecture is clear and the code has a working security/auth foundation, a real order persistence service with a permission-gated API, and a real Prisma schema.
 
-No code changes made: YES
-No commit: YES
-No push: YES
+The project is **not production ready**. After the Phase B/C foundation commits the remaining blockers are: **no row-level security** (tenant isolation is application-layer only), inventory is never decremented, payments are unverified client-side fields with no provider integration or ledger, refunds do not exist, KDS is not implemented, there is no catalog administration UI, and the offline requirement is entirely unimplemented. The order, session, menu, staff, developer-access and login-gateway paths are implemented in code and covered by unit tests, but **none of them has been exercised through a real authenticated browser session against the live Supabase project** — that runtime verification is the next gate. Additionally, the large in-memory domain modules described throughout this report remain simulations that no application code imports; they are not features.
+
+This paragraph replaces an earlier conclusion that attributed non-readiness solely to Supabase project/database verification.
+
+Phase A — Truth Restoration status:
+
+- Documentation corrected: this report, `docs/FEATURE-COMPLETE-GATE.md`, `docs/FINAL-FEATURE-AUDIT.md`
+- Test command added: `npm test`
+- Environment template corrected: `HANSAN_PROVISION_SECRET` documented; four unused Supabase variable names removed
+- Destructive/demo seed removed: `prisma/seed.ts` and its `db:seed` / `prisma.seed` wiring
+
+No commit was made. No push was performed. `.env` was not read or modified.
