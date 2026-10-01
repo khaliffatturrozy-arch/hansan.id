@@ -361,6 +361,3 @@ export const OWNER_PROVISION_PERMISSIONS: readonly PermissionDefinition[] = Obje
 export const OWNER_PROVISION_PERMISSION_NAMES: readonly PermissionName[] = Object.freeze(
   OWNER_PROVISION_PERMISSIONS.map((definition) => definition.name as PermissionName)
 );
-
-
-

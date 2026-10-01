@@ -68,4 +68,3 @@ export async function deleteOrganizationRole(
 ): Promise<{ id: string; name: string; code: string }> {
   return prisma.$transaction((tx) => deleteTenantRole({ tx, context, roleId }));
 }
-

@@ -1035,10 +1035,3 @@ export async function deleteTenantRole(params: {
 
   return { id: target.id, name: target.name, code: target.code };
 }
-
-
-
-
-
-
-

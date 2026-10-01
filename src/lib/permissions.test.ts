@@ -428,4 +428,3 @@ describe("session grant resolution is fail-closed", () => {
     assert.deepEqual(resolveCanonicalGrantPermissions(new Set<string>()), []);
   });
 });
-

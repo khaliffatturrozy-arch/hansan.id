@@ -238,4 +238,3 @@ executing any DDL if catalog or unattributable order rows are present.
 | Row-Level Security | **Not implemented — deferred (see §7)** |
 | Database integration tests | **Not implemented** |
 | Backup / restore, PITR verification | Not addressed |
-

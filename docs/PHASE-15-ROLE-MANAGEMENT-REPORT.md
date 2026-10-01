@@ -149,4 +149,3 @@ The live-database proof requested for this phase is complete (5.1, 46/46). Next:
 role-management UI on top of the verified `/api/roles` surface, and separately decide
 whether `scripts/phase15-live-integration.ts` should become a guarded CI job — it needs
 database credentials, so it cannot join `npm test` as it stands.
-
