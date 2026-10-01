@@ -13,6 +13,7 @@ import { createServerSessionClient } from "@/lib/supabase-server";
 import { prisma } from "@/lib/prisma";
 import { buildOwnerOverviewSnapshot } from "@/lib/owner-hq";
 import { redirect } from "next/navigation";
+import { PERMISSION } from "@/lib/permissions";
 
 async function resolveOwnerPageData() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -65,7 +66,7 @@ async function resolveOwnerPageData() {
   );
 
   const hasOwnerAccess =
-    permissions.has("owner.hq.manage") ||
+    permissions.has(PERMISSION.OWNER_HQ_MANAGE) ||
     staff.roles.some((r) => r.role.name.toUpperCase() === "OWNER");
 
   if (!hasOwnerAccess) {
@@ -85,6 +86,12 @@ async function resolveOwnerPageData() {
     where: { organizationId, status: "COMPLETED" },
   });
 
+  // PHASE C: orders are created as PENDING, so completed-only counters alone
+  // would report zero while real (paid) orders await fulfilment.
+  const awaitingCompletionCount = await prisma.order.count({
+    where: { organizationId, status: { in: ["PENDING", "PROCESSING", "READY"] } },
+  });
+
   // salesTotal: aggregate totalAmount of COMPLETED orders
   const salesAgg = await prisma.order.aggregate({
     where: { organizationId, status: "COMPLETED" },
@@ -93,11 +100,9 @@ async function resolveOwnerPageData() {
 
   const overview = buildOwnerOverviewSnapshot({
     salesTotal: salesAgg._sum.totalAmount ?? 0,
-    orderCount: completedOrderCount,
-    paymentCount: completedOrderCount,
-    customerCount: 0, // Customer model not yet in schema — correct empty state
-    inventoryCount: 0, // Inventory ledger not yet in schema — correct empty state
-    reservationCount: 0, // Reservation model not yet in schema — correct empty state
+    completedOrderCount,
+    totalOrderCount: orderCount,
+    awaitingCompletionCount,
     staffCount,
   });
 
@@ -120,8 +125,11 @@ async function resolveOwnerPageData() {
     counts: {
       orders: orderCount,
       completedOrders: completedOrderCount,
+      awaitingCompletion: awaitingCompletionCount,
       staff: staffCount,
       outlets: outletCount,
+      // Completed orders only. Orders awaiting completion are counted separately
+      // and are deliberately excluded from this figure.
       salesTotal: salesAgg._sum.totalAmount ?? 0,
     },
   };
@@ -169,6 +177,16 @@ export default async function OwnerPage() {
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-10 text-slate-100">
       <div className="mx-auto max-w-5xl space-y-8">
+
+        <nav className="flex flex-wrap items-center gap-4 text-sm">
+          <span className="text-emerald-300">Owner HQ</span>
+          <a href="/owner/staff" className="text-slate-300 underline">
+            Staff Management
+          </a>
+          <a href="/" className="text-slate-300 underline">
+            POS
+          </a>
+        </nav>
 
         {/* Header */}
         <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-8 shadow-2xl shadow-slate-950/40">
@@ -226,7 +244,7 @@ export default async function OwnerPage() {
           <h2 className="mb-4 text-sm font-medium uppercase tracking-[0.15em] text-slate-400">
             Database state
           </h2>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <div>
               <p className="text-xs text-slate-500">Total orders</p>
               <p className="mt-1 text-2xl font-semibold text-white">{counts.orders}</p>
@@ -234,6 +252,14 @@ export default async function OwnerPage() {
             <div>
               <p className="text-xs text-slate-500">Completed</p>
               <p className="mt-1 text-2xl font-semibold text-white">{counts.completedOrders}</p>
+            </div>
+            {/* PHASE C: orders are created PENDING, so this must be visible
+                separately or the dashboard would imply nothing was sold. */}
+            <div>
+              <p className="text-xs text-slate-500">Awaiting completion</p>
+              <p className="mt-1 text-2xl font-semibold text-amber-300">
+                {counts.awaitingCompletion}
+              </p>
             </div>
             <div>
               <p className="text-xs text-slate-500">Staff</p>

@@ -33,9 +33,17 @@ export type RefundSummary = {
 export type OwnerOverviewMetric = {
   label: string;
   value: string;
-  status: "empty" | "ready";
+  /**
+   * PHASE C:
+   *  "unavailable" = the domain is not implemented at all. It must never be
+   *  rendered as 0, because a zero reads as real business data ("we have no
+   *  customers") when the truth is "there is no customer model".
+   */
+  status: "empty" | "ready" | "unavailable";
   detail: string;
 };
+
+const NOT_IMPLEMENTED = "Not implemented";
 
 export function formatCurrency(value: number): string {
   return new Intl.NumberFormat("id-ID", {
@@ -45,57 +53,80 @@ export function formatCurrency(value: number): string {
   }).format(value);
 }
 
+/**
+ * PHASE C — HONEST OWNER OVERVIEW.
+ *
+ * Phase C changes the initial order status from COMPLETED to PENDING, so a
+ * metric set that derived "Sales" and "Orders" only from COMPLETED orders would
+ * report "No sales yet" and "No orders yet" while paid orders were sitting
+ * unfulfilled. That would be a misleading zero. The snapshot now reports:
+ *   - completed sales, with the basis stated explicitly
+ *   - the true total order count, plus how many are awaiting completion
+ *
+ * Domains with no model are reported as `unavailable` rather than as 0.
+ */
 export function buildOwnerOverviewSnapshot(input: {
+  /** Sum of totalAmount over COMPLETED orders only. */
   salesTotal: number;
-  orderCount: number;
-  paymentCount: number;
-  customerCount: number;
-  inventoryCount: number;
-  reservationCount: number;
+  completedOrderCount: number;
+  /** Every order recorded for the tenant, in any lifecycle state. */
+  totalOrderCount: number;
+  /** Accepted but not yet completed: PENDING / PROCESSING / READY. */
+  awaitingCompletionCount: number;
   staffCount: number;
 }): OwnerOverviewMetric[] {
   return [
     {
-      label: "Sales",
-      value: input.salesTotal > 0 ? formatCurrency(input.salesTotal) : "No sales yet",
+      label: "Sales (completed)",
+      value:
+        input.salesTotal > 0
+          ? formatCurrency(input.salesTotal)
+          : "No completed sales yet",
       status: input.salesTotal > 0 ? "ready" : "empty",
-      detail: input.salesTotal > 0 ? `${input.orderCount} completed order(s)` : "No sales yet",
+      detail:
+        input.salesTotal > 0
+          ? `From ${input.completedOrderCount} completed order(s)`
+          : "Only orders that reached COMPLETED are counted here",
     },
     {
       label: "Orders",
-      value: input.orderCount > 0 ? `${input.orderCount} orders` : "No orders yet",
-      status: input.orderCount > 0 ? "ready" : "empty",
-      detail: input.orderCount > 0 ? `${input.paymentCount} payment(s) captured` : "No orders yet",
-    },
-    {
-      label: "Customers",
-      value: input.customerCount > 0 ? `${input.customerCount} customers` : "No customers yet",
-      status: input.customerCount > 0 ? "ready" : "empty",
-      detail: input.customerCount > 0 ? "Customer records are active" : "No customers yet",
-    },
-    {
-      label: "Inventory",
-      value: input.inventoryCount > 0 ? `${input.inventoryCount} catalog items` : "No inventory data yet",
-      status: input.inventoryCount > 0 ? "ready" : "empty",
-      detail: input.inventoryCount > 0 ? "Inventory records available" : "No inventory data yet",
-    },
-    {
-      label: "Payments",
-      value: input.paymentCount > 0 ? `${input.paymentCount} payment transactions` : "No payment transactions yet",
-      status: input.paymentCount > 0 ? "ready" : "empty",
-      detail: input.paymentCount > 0 ? "Financial records are available" : "No payment transactions yet",
-    },
-    {
-      label: "Reservations",
-      value: input.reservationCount > 0 ? `${input.reservationCount} reservations` : "No reservations yet",
-      status: input.reservationCount > 0 ? "ready" : "empty",
-      detail: input.reservationCount > 0 ? "Reservation records are active" : "No reservations yet",
+      value: input.totalOrderCount > 0 ? `${input.totalOrderCount} orders` : "No orders yet",
+      status: input.totalOrderCount > 0 ? "ready" : "empty",
+      detail:
+        input.awaitingCompletionCount > 0
+          ? `${input.completedOrderCount} completed · ${input.awaitingCompletionCount} awaiting completion`
+          : `${input.completedOrderCount} completed`,
     },
     {
       label: "Staff",
-      value: input.staffCount > 0 ? `${input.staffCount} staff members` : "No staff yet",
+      value:
+        input.staffCount > 0 ? `${input.staffCount} staff members` : "No staff yet",
       status: input.staffCount > 0 ? "ready" : "empty",
       detail: input.staffCount > 0 ? "Staff access is configured" : "No staff yet",
+    },
+    {
+      label: "Customers",
+      value: NOT_IMPLEMENTED,
+      status: "unavailable",
+      detail: "No customer model exists yet.",
+    },
+    {
+      label: "Inventory",
+      value: NOT_IMPLEMENTED,
+      status: "unavailable",
+      detail: "No inventory ledger exists yet.",
+    },
+    {
+      label: "Reservations",
+      value: NOT_IMPLEMENTED,
+      status: "unavailable",
+      detail: "No reservation model exists yet.",
+    },
+    {
+      label: "Refunds",
+      value: NOT_IMPLEMENTED,
+      status: "unavailable",
+      detail: "No refund model exists yet.",
     },
   ];
 }
