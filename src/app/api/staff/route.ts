@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { toSafeApiError } from "@/lib/api-errors";
 import { requireProtectedRequest, type AuthenticatedStaffContext } from "@/lib/auth";
-import { assertCanManageStaff, parseCreateStaffRequest } from "@/lib/staff-provisioning";
+import {
+  assertCanManageStaff,
+  parseCreateStaffRequest,
+  parseStaffUpdateRequest,
+} from "@/lib/staff-provisioning";
 import {
   createStaffForOrganization,
   listOrganizationStaff,
   listStaffManagementOptions,
+  setStaffRole,
   setStaffStatus,
 } from "@/lib/staff-service";
 
@@ -14,7 +19,8 @@ import {
  *
  * GET    list the caller's organization staff + assignable roles/outlets
  * POST   create a staff member (real Supabase Auth identity + Staff + role)
- * PATCH  activate / deactivate a staff member
+ * PATCH  change ONE thing about a staff member: status OR role (status XOR
+ *        roleId). Sending both is a 400; no implicit precedence exists.
  *
  * AUTHORIZATION
  *  - a valid server-side session is required (bearer or Supabase SSR cookie)
@@ -24,7 +30,14 @@ import {
  *
  * TENANT ISOLATION
  *  organizationId is always `context.organizationId` and is never read from the
- *  body. A role or outlet belonging to another organization is rejected with 403.
+ *  body. A role or outlet belonging to another organization is rejected with 403;
+ *  a staff member of another organization is a 404 (identical to unknown), so
+ *  this endpoint is not a cross-tenant existence oracle.
+ *
+ * ROLE CHANGES (Phase 16, R2)
+ *  The replacement is atomic (delete current StaffRole + insert the new one +
+ *  STAFF_ROLE_CHANGED audit in one transaction) and refuses any change that
+ *  would leave the organization with zero ACTIVE OWNER staff (409).
  */
 
 export const dynamic = "force-dynamic";
@@ -108,23 +121,14 @@ export async function PATCH(request: Request) {
     // Authenticate before interpreting the body (same rule as POST).
     const context = await requireOwnerStaffManager(request);
 
-    const body = (await readJson(request)) as Record<string, unknown>;
+    // One request changes one thing: status XOR role change. Identity and
+    // authority fields in the body are ignored by the parser.
+    const input = parseStaffUpdateRequest(await readJson(request));
 
-    const staffId = typeof body.staffId === "string" ? body.staffId.trim() : "";
-    const status = typeof body.status === "string" ? body.status : "";
-
-    if (!staffId || !status) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "staffId dan status wajib diisi.",
-          code: "INVALID_REQUEST",
-        },
-        { status: 400 }
-      );
-    }
-
-    const staff = await setStaffStatus(context, staffId, status);
+    const staff =
+      input.kind === "status"
+        ? await setStaffStatus(context, input.staffId, input.status)
+        : await setStaffRole(context, input.staffId, input.roleId);
 
     return NextResponse.json({ ok: true, data: { staff } });
   } catch (error) {
@@ -134,7 +138,7 @@ export async function PATCH(request: Request) {
         { status: 400 }
       );
     }
-    const { status, body } = toSafeApiError(error, "Gagal memperbarui status staff.");
+    const { status, body } = toSafeApiError(error, "Gagal memperbarui staff.");
     return NextResponse.json(body, { status });
   }
 }

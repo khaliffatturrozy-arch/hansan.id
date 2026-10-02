@@ -1,6 +1,12 @@
 // Relative import on purpose: this module is loaded directly by the node:test
 // suite, which does not resolve the `@/` path alias.
-import { requirePermission, requireRole, requireStaff, type AuthenticatedStaffContext } from "./auth";
+import {
+  normalizeString,
+  requirePermission,
+  requireRole,
+  requireStaff,
+  type AuthenticatedStaffContext,
+} from "./auth";
 import { PERMISSION } from "./permissions";
 
 /**
@@ -13,6 +19,16 @@ import { PERMISSION } from "./permissions";
  * the result: organizationId, creatorId, actorStaffId, status, permissions.
  * The tenant and the acting staff always come from the authenticated
  * server-side context.
+ *
+ * PHASE 16 ADDITIONS (still pure — no database, no Supabase access)
+ *   - parseStaffUpdateRequest: the PATCH /api/staff allowlist. A caller sends
+ *     EITHER a status change OR a role change (status XOR roleId), never both.
+ *   - canManageStaff: one gate expression shared by the /owner/staff page and
+ *     mirrored exactly by assertCanManageStaff for the API, so the page can
+ *     never drift into a second authorization model.
+ *   - holdsOwnerRole / decideActiveOwnerRetention / assertActiveOwnerRetention:
+ *     the last-active-OWNER lockout invariant. Used by BOTH the role-change
+ *     flow (staff-role-change.ts) and the deactivation flow (staff-service.ts).
  */
 
 // Existing, canonical grant for organization configuration — see the catalog.
@@ -138,4 +154,157 @@ export function assertCanManageStaff(context: AuthenticatedStaffContext): void {
   requireStaff(context);
   requireRole(context, STAFF_MANAGEMENT_ROLE);
   requirePermission(context, STAFF_MANAGEMENT_PERMISSION);
+}
+
+/**
+ * The SAME gate as {@link assertCanManageStaff}, expressed as a boolean.
+ *
+ * The /owner/staff page performs an early access gate for UX. It must not
+ * re-implement the authorization rule, so it calls this function with the
+ * server-loaded role names and permission names; the API stays authoritative
+ * through `assertCanManageStaff`. staff-provisioning.test.ts proves the two
+ * agree for every combination of status / role / permission.
+ *
+ * Semantics are identical to the canonical guards in src/lib/auth.ts:
+ *   - ACTIVE status (blank or missing counts as INACTIVE, exactly like
+ *     requireStaff)
+ *   - one role whose uppercased name equals STAFF_MANAGEMENT_ROLE
+ *   - one permission whose lowercased name equals STAFF_MANAGEMENT_PERMISSION
+ */
+export function canManageStaff(input: {
+  status: unknown;
+  roleNames: readonly unknown[];
+  permissions: readonly unknown[];
+}): boolean {
+  const status = normalizeString(input.status)?.toUpperCase();
+  if (status !== "ACTIVE") {
+    return false;
+  }
+
+  const hasRole = (input.roleNames ?? []).some(
+    (roleName) => normalizeString(roleName)?.toUpperCase() === STAFF_MANAGEMENT_ROLE
+  );
+  if (!hasRole) {
+    return false;
+  }
+
+  return (input.permissions ?? []).some(
+    (permission) => normalizeString(permission)?.toLowerCase() === STAFF_MANAGEMENT_PERMISSION
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/staff REQUEST (status XOR role change)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type StaffUpdateRequest =
+  | { kind: "status"; staffId: string; status: string }
+  | { kind: "role"; staffId: string; roleId: string };
+
+/**
+ * Parses the OWNER-supplied fields of a PATCH body.
+ *
+ * A request changes exactly one thing: either the staff status or the staff
+ * role. Supplying both is a 400, never an implicit precedence order. Any
+ * identity or authorization field present in the body is ignored outright —
+ * the parsed result cannot carry `organizationId`, `permissions`, actor fields
+ * or platform flags, because it is a closed union of the two shapes below.
+ */
+export function parseStaffUpdateRequest(body: unknown): StaffUpdateRequest {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new StaffProvisioningError("Payload staff tidak valid.", 400);
+  }
+
+  const record = body as Record<string, unknown>;
+  const staffId = requiredString(record.staffId, "staffId", 120);
+
+  const hasStatus = typeof record.status === "string" && record.status.trim().length > 0;
+  const hasRoleId = typeof record.roleId === "string" && record.roleId.trim().length > 0;
+
+  if (hasStatus && hasRoleId) {
+    throw new StaffProvisioningError(
+      "Kirim salah satu: status atau roleId, tidak keduanya.",
+      400
+    );
+  }
+
+  if (hasRoleId) {
+    return { kind: "role", staffId, roleId: requiredString(record.roleId, "roleId", 120) };
+  }
+
+  if (hasStatus) {
+    // Raw value: setStaffStatus owns status validation and keeps its message.
+    return { kind: "status", staffId, status: record.status as string };
+  }
+
+  throw new StaffProvisioningError("staffId dan status atau roleId wajib diisi.", 400);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAST ACTIVE OWNER INVARIANT (administrative lockout protection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Whether a set of role names includes the OWNER role. Comparison is the same
+ * case-insensitive normalization the canonical guards use, so no grant or
+ * assignment can dodge the invariant through casing.
+ */
+export function holdsOwnerRole(roleNames: Iterable<unknown>): boolean {
+  for (const roleName of roleNames) {
+    if (normalizeString(roleName)?.toUpperCase() === STAFF_MANAGEMENT_ROLE) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export type OwnerRetentionVerdict =
+  | { ok: true }
+  | { ok: false; status: 409; message: string };
+
+/**
+ * Decides whether an operation may proceed without leaving the organization
+ * with ZERO ACTIVE OWNER staff.
+ *
+ * Inputs are facts the caller loads inside the same transaction that performs
+ * the mutation:
+ *   - targetIsActiveOwner:    target staff is ACTIVE and currently holds OWNER
+ *   - targetRetainsActiveOwner: after the operation the target is still a
+ *     staff who is ACTIVE and holds OWNER (role change to OWNER, or a status
+ *     change that keeps them ACTIVE)
+ *   - otherActiveOwnerCount:  OTHER staff in the SAME organization who are
+ *     ACTIVE and hold OWNER right now
+ *
+ * Rejection is 409 — the request is understood and the caller is authorized;
+ * the organization's own state forbids it. No new permission is invented.
+ */
+export function decideActiveOwnerRetention(params: {
+  targetIsActiveOwner: boolean;
+  targetRetainsActiveOwner: boolean;
+  otherActiveOwnerCount: number;
+}): OwnerRetentionVerdict {
+  if (!params.targetIsActiveOwner || params.targetRetainsActiveOwner) {
+    return { ok: true };
+  }
+  if (params.otherActiveOwnerCount > 0) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    status: 409,
+    message:
+      "Operasi ini akan menghilangkan OWNER aktif terakhir pada organisasi. Tambahkan atau aktifkan OWNER lain terlebih dahulu.",
+  };
+}
+
+/** Narrowing form of {@link decideActiveOwnerRetention}; throws on rejection. */
+export function assertActiveOwnerRetention(params: {
+  targetIsActiveOwner: boolean;
+  targetRetainsActiveOwner: boolean;
+  otherActiveOwnerCount: number;
+}): void {
+  const verdict = decideActiveOwnerRetention(params);
+  if (!verdict.ok) {
+    throw new StaffProvisioningError(verdict.message, verdict.status);
+  }
 }

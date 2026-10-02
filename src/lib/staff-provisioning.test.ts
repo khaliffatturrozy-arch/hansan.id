@@ -17,9 +17,14 @@ const {
   STAFF_MANAGEMENT_PERMISSION,
   StaffProvisioningError,
   parseCreateStaffRequest,
+  parseStaffUpdateRequest,
   requireRoleInOrganization,
   requireOutletInOrganization,
   assertCanManageStaff,
+  canManageStaff,
+  holdsOwnerRole,
+  decideActiveOwnerRetention,
+  assertActiveOwnerRetention,
 } = require("./staff-provisioning");
 
 /**
@@ -189,5 +194,230 @@ describe("OWNER-only authorization", () => {
         `status ${status} must be rejected`
       );
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 16 — PATCH /api/staff REQUEST (status XOR role change)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("staff update request parsing", () => {
+  it("parses a status change", () => {
+    const parsed = parseStaffUpdateRequest({ staffId: "staff_1", status: "INACTIVE" });
+    assert.deepEqual(parsed, { kind: "status", staffId: "staff_1", status: "INACTIVE" });
+  });
+
+  it("parses a role change", () => {
+    const parsed = parseStaffUpdateRequest({ staffId: "staff_1", roleId: "role_cashier" });
+    assert.deepEqual(parsed, { kind: "role", staffId: "staff_1", roleId: "role_cashier" });
+  });
+
+  it("rejects a request that supplies BOTH status and roleId (no implicit precedence)", () => {
+    assert.throws(
+      () => parseStaffUpdateRequest({ staffId: "staff_1", status: "ACTIVE", roleId: "role_1" }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+  });
+
+  it("rejects a request that supplies neither", () => {
+    assert.throws(
+      () => parseStaffUpdateRequest({ staffId: "staff_1" }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+  });
+
+  it("requires staffId and bounds its length", () => {
+    assert.throws(
+      () => parseStaffUpdateRequest({ status: "ACTIVE" }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+    assert.throws(
+      () => parseStaffUpdateRequest({ staffId: "x".repeat(121), status: "ACTIVE" }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+  });
+
+  it("bounds the roleId length", () => {
+    assert.throws(
+      () => parseStaffUpdateRequest({ staffId: "staff_1", roleId: "r".repeat(121) }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+  });
+
+  it("leaves status validation to the status flow and rejects malformed payloads", () => {
+    // A whitespace status is not a role change and not a usable status: the
+    // parser refuses it before any service runs.
+    assert.throws(
+      () => parseStaffUpdateRequest({ staffId: "staff_1", status: "   " }),
+      (error: unknown) => hasStatus(error, 400)
+    );
+    assert.throws(() => parseStaffUpdateRequest(null), StaffProvisioningError);
+    assert.throws(() => parseStaffUpdateRequest([{ staffId: "s" }]), StaffProvisioningError);
+  });
+
+  it("never accepts identity or authority fields from the client", () => {
+    const parsed = parseStaffUpdateRequest({
+      staffId: "staff_1",
+      roleId: "role_cashier",
+      organizationId: "attacker_org",
+      actorStaffId: "attacker_staff",
+      permissions: ["platform.admin"],
+      isPlatform: true,
+    });
+
+    // The parsed result is a closed union: only staffId + roleId exist.
+    assert.deepEqual(Object.keys(parsed).sort(), ["kind", "roleId", "staffId"]);
+    assert.equal(JSON.stringify(parsed).includes("attacker"), false);
+    assert.equal(JSON.stringify(parsed).includes("platform"), false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 16 — S2: the page gate and the API gate must agree
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("canManageStaff parity with assertCanManageStaff", () => {
+  it("agrees with the API guard for every status / role / permission combination", () => {
+    const statuses = ["ACTIVE", "INACTIVE", "SUSPENDED", "", " active "];
+    const roles = ["OWNER", "CASHIER", "owner", ""];
+    const permissionSets = [
+      ["settings.manage", "orders.read"],
+      ["orders.read"],
+      [],
+      ["SETTINGS.MANAGE"],
+      [" settings.manage "],
+    ];
+
+    for (const status of statuses) {
+      for (const roleName of roles) {
+        for (const permissions of permissionSets) {
+          const context = { ...OWNER_CONTEXT, status, roleName, permissions };
+
+          let apiAllows = true;
+          try {
+            assertCanManageStaff(context);
+          } catch {
+            apiAllows = false;
+          }
+
+          const pageAllows = canManageStaff({
+            status,
+            roleNames: [roleName],
+            permissions,
+          });
+
+          assert.equal(
+            pageAllows,
+            apiAllows,
+            `parity failed for status=${JSON.stringify(status)} role=${JSON.stringify(roleName)} permissions=${JSON.stringify(permissions)}`
+          );
+        }
+      }
+    }
+  });
+
+  it("returns true for an ACTIVE owner among several roles holding the permission", () => {
+    assert.equal(
+      canManageStaff({
+        status: "ACTIVE",
+        roleNames: ["CASHIER", "OWNER"],
+        permissions: ["orders.read", "settings.manage"],
+      }),
+      true
+    );
+  });
+
+  it("returns false when the permission is missing even for an owner", () => {
+    assert.equal(
+      canManageStaff({ status: "ACTIVE", roleNames: ["OWNER"], permissions: ["orders.read"] }),
+      false
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 16 — LAST ACTIVE OWNER INVARIANT (administrative lockout protection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("holdsOwnerRole", () => {
+  it("matches OWNER case-insensitively and rejects everything else", () => {
+    assert.equal(holdsOwnerRole(["OWNER"]), true);
+    assert.equal(holdsOwnerRole(["cashier", "owner"]), true);
+    assert.equal(holdsOwnerRole([" owner "]), true);
+    assert.equal(holdsOwnerRole(["OWNERS"]), false);
+    assert.equal(holdsOwnerRole(["CASHIER"]), false);
+    assert.equal(holdsOwnerRole([]), false);
+    assert.equal(holdsOwnerRole(["", null, undefined, 7]), false);
+  });
+});
+
+describe("last active OWNER retention", () => {
+  it("allows every operation that does not touch an ACTIVE OWNER", () => {
+    // Target is not an active owner at all (e.g. an INACTIVE OWNER, or any
+    // non-OWNER staff): nothing to protect.
+    assert.equal(
+      decideActiveOwnerRetention({
+        targetIsActiveOwner: false,
+        targetRetainsActiveOwner: false,
+        otherActiveOwnerCount: 0,
+      }).ok,
+      true
+    );
+  });
+
+  it("allows an operation where the target remains an ACTIVE OWNER (OWNER → OWNER)", () => {
+    assert.equal(
+      decideActiveOwnerRetention({
+        targetIsActiveOwner: true,
+        targetRetainsActiveOwner: true,
+        otherActiveOwnerCount: 0,
+      }).ok,
+      true
+    );
+  });
+
+  it("allows stripping an ACTIVE OWNER when at least one OTHER active owner remains", () => {
+    assert.equal(
+      decideActiveOwnerRetention({
+        targetIsActiveOwner: true,
+        targetRetainsActiveOwner: false,
+        otherActiveOwnerCount: 1,
+      }).ok,
+      true
+    );
+  });
+
+  it("rejects stripping the LAST active owner with 409", () => {
+    const verdict = decideActiveOwnerRetention({
+      targetIsActiveOwner: true,
+      targetRetainsActiveOwner: false,
+      otherActiveOwnerCount: 0,
+    });
+    assert.equal(verdict.ok, false);
+    if (!verdict.ok) {
+      assert.equal(verdict.status, 409);
+      assert.match(verdict.message, /OWNER/i);
+    }
+  });
+
+  it("throws a 409 StaffProvisioningError through the assert form", () => {
+    assert.throws(
+      () =>
+        assertActiveOwnerRetention({
+          targetIsActiveOwner: true,
+          targetRetainsActiveOwner: false,
+          otherActiveOwnerCount: 0,
+        }),
+      (error: unknown) =>
+        error instanceof StaffProvisioningError && hasStatus(error, 409)
+    );
+
+    assert.doesNotThrow(() =>
+      assertActiveOwnerRetention({
+        targetIsActiveOwner: true,
+        targetRetainsActiveOwner: false,
+        otherActiveOwnerCount: 1,
+      })
+    );
   });
 });

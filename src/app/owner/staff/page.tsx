@@ -1,6 +1,11 @@
 import { createServerSessionClient } from "@/lib/supabase-server";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
+import {
+  canManageStaff,
+  STAFF_MANAGEMENT_PERMISSION,
+  STAFF_MANAGEMENT_ROLE,
+} from "@/lib/staff-provisioning";
 import { StaffManager } from "./StaffManager";
 
 /**
@@ -8,10 +13,13 @@ import { StaffManager } from "./StaffManager";
  *
  * The minimum capability required to onboard a real cashier so the POS can be
  * smoke-tested end to end. This is deliberately NOT an HR system: it lists
- * staff, creates one, assigns an existing role and outlet, and toggles status.
+ * staff, creates one, assigns an existing role and outlet, changes a role and
+ * toggles status.
  *
- * Authorization is enforced here (server-side) and again in /api/staff.
- * Mirrors the existing auth pattern in src/app/owner/page.tsx.
+ * Authorization is authoritative in /api/staff. This page performs the SAME
+ * gate through the shared canManageStaff helper (src/lib/staff-provisioning.ts)
+ * purely as an early UX gate — it is not a second authorization model, and it
+ * holds no hardcoded role or permission strings of its own.
  */
 
 export const dynamic = "force-dynamic";
@@ -61,15 +69,16 @@ async function resolveStaffPageData() {
     return { configured: true as const, authenticated: true as const, authorized: false as const };
   }
 
-  const permissions = new Set(
-    staff.roles.flatMap((entry) =>
-      entry.role.permissions.map((entry2) => entry2.permission.name.toLowerCase())
-    )
+  const roleNames = staff.roles.map((entry) => entry.role.name);
+  const permissionNames = staff.roles.flatMap((entry) =>
+    entry.role.permissions.map((entry2) => entry2.permission.name)
   );
-  const isOwner = staff.roles.some((entry) => entry.role.name.toUpperCase() === "OWNER");
 
-  // Same rule the API enforces: OWNER role + existing settings.manage permission.
-  if (!isOwner || !permissions.has("settings.manage")) {
+  // The same rule /api/staff enforces via assertCanManageStaff, expressed once
+  // in staff-provisioning.ts and shared — no hardcoded "OWNER" string, no
+  // hardcoded "settings.manage" string. Parity is proven in
+  // staff-provisioning.test.ts; the API remains authoritative.
+  if (!canManageStaff({ status: staff.status, roleNames, permissions: permissionNames })) {
     return { configured: true as const, authenticated: true as const, authorized: false as const };
   }
 
@@ -149,7 +158,7 @@ export default async function StaffPage() {
           </p>
           <h1 className="mt-3 text-2xl font-semibold text-white">Insufficient permissions</h1>
           <p className="mt-3 text-slate-300">
-            Staff management requires an OWNER role with the settings.manage permission.
+            {`Staff management requires the ${STAFF_MANAGEMENT_ROLE} role with the ${STAFF_MANAGEMENT_PERMISSION} permission.`}
           </p>
           <a href="/owner" className="mt-4 inline-block text-sm text-emerald-300 underline">
             Kembali ke Owner HQ

@@ -2,11 +2,18 @@ import { createClient } from "@supabase/supabase-js";
 import { prisma } from "@/lib/prisma";
 import { getServiceRoleKey, getSupabaseConfig } from "@/lib/supabase-server";
 import {
+  assertActiveOwnerRetention,
+  holdsOwnerRole,
   requireOutletInOrganization,
   requireRoleInOrganization,
   StaffProvisioningError,
+  STAFF_MANAGEMENT_ROLE,
   type CreateStaffRequest,
 } from "@/lib/staff-provisioning";
+import {
+  changeStaffRole,
+  type StaffRoleChangeTxClient,
+} from "@/lib/staff-role-change";
 import type { AuthenticatedStaffContext } from "@/lib/auth";
 
 /**
@@ -281,7 +288,12 @@ export async function setStaffStatus(
   // Tenant-scoped: a staff id belonging to another organization is not found.
   const existing = await prisma.staff.findFirst({
     where: { id: staffId, organizationId: context.organizationId },
-    select: { id: true, status: true, outletId: true },
+    select: {
+      id: true,
+      status: true,
+      outletId: true,
+      roles: { select: { role: { select: { name: true } } } },
+    },
   });
 
   if (!existing) {
@@ -296,7 +308,34 @@ export async function setStaffStatus(
     );
   }
 
+  const ownerRoleNames = existing.roles.map((entry) => entry.role.name);
+
   const updated = await prisma.$transaction(async (tx) => {
+    // Last ACTIVE OWNER invariant (Phase 16): a deactivation must never leave
+    // the organization with zero ACTIVE OWNER staff. Decided inside the same
+    // transaction as the mutation; a 409 aborts before anything is written.
+    const targetIsActiveOwner =
+      existing.status === "ACTIVE" && holdsOwnerRole(ownerRoleNames);
+    const targetRetainsActiveOwner = nextStatus === "ACTIVE";
+
+    const otherActiveOwnerCount =
+      targetIsActiveOwner && !targetRetainsActiveOwner
+        ? await tx.staff.count({
+            where: {
+              organizationId: context.organizationId,
+              status: "ACTIVE",
+              id: { not: existing.id },
+              roles: { some: { role: { name: STAFF_MANAGEMENT_ROLE } } },
+            },
+          })
+        : 0;
+
+    assertActiveOwnerRetention({
+      targetIsActiveOwner,
+      targetRetainsActiveOwner,
+      otherActiveOwnerCount,
+    });
+
     const staff = await tx.staff.update({
       where: { id: existing.id },
       data: { status: nextStatus },
@@ -318,6 +357,42 @@ export async function setStaffStatus(
 
     return staff;
   });
+
+  return toStaffView(updated);
+}
+
+/**
+ * Changes a staff member's role (Phase 16, R2).
+ *
+ * The decision rules and the atomic replacement live in staff-role-change.ts
+ * (pure + tx-injected, unit-tested against a fake client). This function is the
+ * production wiring: it opens the real transaction, injects it, and re-reads the
+ * updated staff row WITHIN the same transaction so the response always reflects
+ * exactly what the transaction wrote.
+ */
+export async function setStaffRole(
+  context: AuthenticatedStaffContext,
+  staffId: string,
+  roleId: string
+): Promise<StaffView> {
+  const updated = await prisma.$transaction(async (tx) => {
+    const change = await changeStaffRole({
+      tx: tx as unknown as StaffRoleChangeTxClient,
+      context,
+      staffId,
+      roleId,
+    });
+
+    return tx.staff.findUnique({
+      where: { id: change.staffId },
+      select: staffSelect,
+    });
+  });
+
+  if (!updated) {
+    // Unreachable: the target was proven to exist inside the same transaction.
+    throw new StaffProvisioningError("Staff tidak ditemukan.", 404);
+  }
 
   return toStaffView(updated);
 }

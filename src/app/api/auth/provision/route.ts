@@ -9,9 +9,17 @@
  *   → Outlet (first outlet under the organization)
  *   → Permission records (owner.hq.manage, settings.manage, orders.read, orders.create)
  *   → OWNER Role scoped to the organization (isPlatform = false)
+ *   → Standard tenant roles (MANAGER, CASHIER, KITCHEN, BAR, FINANCE, STAFF;
+ *     templates from src/lib/tenant-role-templates.ts, isPlatform = false)
  *   → Staff profile linked to the Supabase Auth user
  *   → StaffRole assignment
  *   → AuditLog record
+ *
+ * Phase 16 note: the standard tenant roles exist so newly created staff can
+ * receive a NON-OWNER role (least privilege). The OWNER role and its four
+ * permissions are created exactly as before and are never modified by the
+ * seeding. An organization that already has a standard role keeps it: roles are
+ * only ever created, never duplicated, updated or deleted here.
  *
  * SECURITY:
  * - Bearer token is validated using SUPABASE_SERVICE_ROLE_KEY only. No anon fallback.
@@ -45,6 +53,7 @@ import { timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { AuthGuardError, getBearerToken } from "@/lib/auth";
 import { OWNER_PROVISION_PERMISSIONS } from "@/lib/permissions";
+import { seedStandardTenantRoles } from "@/lib/tenant-role-templates";
 
 // The permission set granted to an OWNER role at provisioning time. It is
 // defined once in the canonical catalog (src/lib/permissions.ts) and inserted
@@ -289,6 +298,16 @@ export async function POST(request: Request) {
         skipDuplicates: true,
       });
 
+      // 6e-2. Seed the standard tenant roles (Phase 16, R1) — same transaction,
+      // same organization. Idempotent by construction: the executor only
+      // creates what does not already exist for this organization, and never
+      // touches the OWNER role or another tenant. The OWNER role above is
+      // intentionally NOT in the template set.
+      const standardRoles = await seedStandardTenantRoles({
+        tx,
+        organizationId: organization.id,
+      });
+
       // 6f. Create Staff profile
       const staff = await tx.staff.create({
         data: {
@@ -327,12 +346,22 @@ export async function POST(request: Request) {
             outletSlug,
             roleName: "OWNER",
             permissions: OWNER_PERMISSIONS.map((p) => p.name),
+            // Phase 16: factual record of the standard tenant roles seeded in
+            // this same transaction (empty when they already existed).
+            standardRoles: standardRoles.createdRoleNames,
             provisionedAt: new Date().toISOString(),
           },
         },
       });
 
-      return { organization, outlet, staff, ownerRole, permissionRecords };
+      return {
+        organization,
+        outlet,
+        staff,
+        ownerRole,
+        permissionRecords,
+        standardRoles: standardRoles.createdRoleNames,
+      };
     });
 
     return NextResponse.json(
@@ -349,6 +378,7 @@ export async function POST(request: Request) {
           outletSlug: result.outlet.slug,
           roleName: "OWNER",
           permissions: result.permissionRecords.map((p) => p.name),
+          standardRoles: result.standardRoles,
         },
       },
       { status: 201 }

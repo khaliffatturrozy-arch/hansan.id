@@ -8,8 +8,12 @@ import { useRouter } from "next/navigation";
  * No visual polish by design: the goal is to enable a real smoke test.
  *
  * SECURITY: the client only ever chooses firstName, lastName, email, role and
- * outlet. organizationId, creator identity, status and permissions are
- * derived server-side and are never sent from here.
+ * outlet at creation time, and later a status toggle or a role change. The
+ * role change sends exactly { staffId, roleId }; organizationId, creator
+ * identity, status, permissions and platform flags are derived server-side and
+ * are never sent from here. The server re-validates everything (authorization,
+ * tenant ownership of both staff and role, platform-role refusal, last active
+ * OWNER invariant).
  */
 
 type StaffRow = {
@@ -45,6 +49,8 @@ export function StaffManager({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  /** staffId of the row whose role is being changed right now, if any. */
+  const [changingId, setChangingId] = useState<string | null>(null);
 
   async function handleCreate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -114,6 +120,44 @@ export function StaffManager({
         kind: "error",
         text: error instanceof Error ? error.message : "Gagal memperbarui status staff.",
       });
+    }
+  }
+
+  async function handleChangeRole(staffId: string, roleId: string) {
+    if (!roleId || changingId) return;
+
+    setChangingId(staffId);
+    setMessage(null);
+
+    try {
+      // Exactly { staffId, roleId }: the server derives the organization, the
+      // actor and every authorization fact from the session.
+      const response = await fetch("/api/staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId, roleId }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.error ?? "Gagal mengubah role staff.");
+      }
+
+      const assignedRole = (payload.data.staff.roleNames ?? []).join(", ") || "no role";
+      setMessage({
+        kind: "ok",
+        text: `Role ${payload.data.staff.email} diubah menjadi ${assignedRole}.`,
+      });
+      router.refresh();
+    } catch (error) {
+      setMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Gagal mengubah role staff.",
+      });
+      // Re-render from the server so the select shows the stored role again.
+      router.refresh();
+    } finally {
+      setChangingId(null);
     }
   }
 
@@ -235,11 +279,21 @@ export function StaffManager({
           <p className="mt-3 text-sm text-slate-400">No staff yet.</p>
         ) : (
           <ul className="mt-3 space-y-2">
-            {initialStaff.map((staff) => (
-              <li
-                key={staff.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 py-2"
-              >
+            {initialStaff.map((staff) => {
+              // The role the server assigned, matched against the option list.
+              // Zero or several roles => no single current option; the select
+              // then shows the current name(s) as a placeholder and any chosen
+              // role replaces all of them.
+              const currentRoleOption =
+                staff.roleNames.length === 1
+                  ? roles.find((role) => role.name === staff.roleNames[0])
+                  : undefined;
+
+              return (
+                <li
+                  key={staff.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 px-3 py-2"
+                >
                 <div className="min-w-0">
                   <p className="truncate text-sm text-white">
                     {staff.firstName}
@@ -258,20 +312,39 @@ export function StaffManager({
                     </span>
                   </p>
                 </div>
-                <button
-                  type="button"
-                  disabled={staff.id === viewerId}
-                  onClick={() => handleToggleStatus(staff.id, staff.status)}
-                  className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
-                >
-                  {staff.id === viewerId
-                    ? "This is you"
-                    : staff.status === "ACTIVE"
-                      ? "Deactivate"
-                      : "Activate"}
-                </button>
-              </li>
-            ))}
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label={`Role for ${staff.firstName}`}
+                    disabled={changingId === staff.id || roles.length === 0}
+                    value={currentRoleOption?.id ?? ""}
+                    onChange={(event) => handleChangeRole(staff.id, event.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1 text-xs text-slate-200 disabled:opacity-40"
+                  >
+                    {!currentRoleOption && (
+                      <option value="">{staff.roleNames.join(", ") || "no role"}</option>
+                    )}
+                    {roles.map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {role.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={staff.id === viewerId}
+                    onClick={() => handleToggleStatus(staff.id, staff.status)}
+                    className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 disabled:opacity-40"
+                  >
+                    {staff.id === viewerId
+                      ? "This is you"
+                      : staff.status === "ACTIVE"
+                        ? "Deactivate"
+                        : "Activate"}
+                  </button>
+                </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
